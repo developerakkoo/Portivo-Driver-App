@@ -1,0 +1,113 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import '../core/theme/app_colors.dart';
+
+class AccessPendingScreen extends StatefulWidget {
+  const AccessPendingScreen({super.key});
+
+  @override
+  State<AccessPendingScreen> createState() => _AccessPendingScreenState();
+}
+
+class _AccessPendingScreenState extends State<AccessPendingScreen> {
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    // Navigate to main scaffold after 5 seconds
+    _timer = Timer(const Duration(seconds: 5), () {
+      if (mounted) {
+        Navigator.of(context).pushReplacementNamed('/home');
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _handleContactTransporter(BuildContext context) {
+    // TODO: Implement contact transporter functionality
+    // This could open a phone dialer, email, or in-app messaging
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Contact Transporter'),
+        content: const Text('This feature will allow you to contact your transporter. Implementation coming soon.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Icon
+              Icon(
+                Icons.pending_actions,
+                size: 80.0,
+                color: AppColors.textMuted,
+              ),
+              const SizedBox(height: 32.0),
+
+              // Title
+              Text(
+                'Access Pending',
+                style: textTheme.headlineLarge?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16.0),
+
+              // Message
+              Text(
+                'Your access is pending approval from the transporter. Please wait for approval or contact your transporter for more information.',
+                style: textTheme.bodyLarge?.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 48.0),
+
+              // Contact Transporter Button
+              SizedBox(
+                height: 52.0,
+                child: ElevatedButton(
+                  onPressed: () => _handleContactTransporter(context),
+                  child: Text(
+                    'Contact Transporter',
+                    style: textTheme.labelLarge?.copyWith(
+                      color: AppColors.background,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
