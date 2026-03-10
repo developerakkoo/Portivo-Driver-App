@@ -1,8 +1,31 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../core/theme/app_colors.dart';
+import '../core/localization/app_localizations.dart';
+import '../providers/driver_provider.dart';
+import '../core/constants/app_constants.dart';
+import 'package:intl/intl.dart';
 
-class ProfileScreen extends StatelessWidget {
+class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
+
+  @override
+  State<ProfileScreen> createState() => _ProfileScreenState();
+}
+
+class _ProfileScreenState extends State<ProfileScreen> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadProfile();
+    });
+  }
+
+  void _loadProfile() {
+    final driverProvider = Provider.of<DriverProvider>(context, listen: false);
+    driverProvider.loadProfile();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -11,28 +34,73 @@ class ProfileScreen extends StatelessWidget {
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
-        title: const Text('Profile'),
+        title: Text(AppLocalizations.of(context)!.profileTitle),
       ),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // Profile Header
-              _buildProfileHeader(textTheme),
-              const SizedBox(height: 32.0),
+        child: RefreshIndicator(
+          onRefresh: () async {
+            _loadProfile();
+          },
+          child: Consumer<DriverProvider>(
+            builder: (context, driverProvider, _) {
+              if (driverProvider.isLoading && driverProvider.driver == null) {
+                return const Center(child: CircularProgressIndicator());
+              }
 
-              // Profile Info
-              _buildProfileInfo(textTheme),
-            ],
+              final driver = driverProvider.driver;
+              if (driver == null) {
+                return Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.error_outline, size: 64.0, color: AppColors.error),
+                      const SizedBox(height: 16.0),
+                      Text(
+                        'Failed to load profile',
+                        style: textTheme.headlineSmall?.copyWith(
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                      if (driverProvider.error != null) ...[
+                        const SizedBox(height: 8.0),
+                        Text(
+                          driverProvider.error!,
+                          style: textTheme.bodyMedium?.copyWith(
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                );
+              }
+
+              return SingleChildScrollView(
+                padding: const EdgeInsets.all(24.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // Profile Header
+                    _buildProfileHeader(textTheme, driver),
+                    const SizedBox(height: 32.0),
+
+                    // Profile Info
+                    _buildProfileInfo(textTheme, driver),
+                    const SizedBox(height: 24.0),
+
+                    // Language Selection
+                    _buildLanguageSection(context, driver),
+                  ],
+                ),
+              );
+            },
           ),
         ),
       ),
     );
   }
 
-  Widget _buildProfileHeader(TextTheme textTheme) {
+  Widget _buildProfileHeader(TextTheme textTheme, dynamic driver) {
     return Column(
       children: [
         CircleAvatar(
@@ -46,7 +114,7 @@ class ProfileScreen extends StatelessWidget {
         ),
         const SizedBox(height: 16.0),
         Text(
-          'Driver Name',
+          driver.name ?? 'Driver',
           style: textTheme.headlineSmall?.copyWith(
             fontWeight: FontWeight.bold,
             color: AppColors.textPrimary,
@@ -54,7 +122,7 @@ class ProfileScreen extends StatelessWidget {
         ),
         const SizedBox(height: 4.0),
         Text(
-          'Driver ID: DRV-001',
+          'ID: ${driver.id.substring(0, 8)}...',
           style: textTheme.bodyMedium?.copyWith(
             color: AppColors.textSecondary,
           ),
@@ -63,30 +131,125 @@ class ProfileScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildProfileInfo(TextTheme textTheme) {
-    return Column(
-      children: [
-        _buildInfoItem(
-          icon: Icons.phone_outlined,
-          label: 'Mobile Number',
-          value: '+1 234 567 8900',
-          textTheme: textTheme,
-        ),
-        const Divider(),
-        _buildInfoItem(
-          icon: Icons.email_outlined,
-          label: 'Email',
-          value: 'driver@example.com',
-          textTheme: textTheme,
-        ),
-        const Divider(),
-        _buildInfoItem(
-          icon: Icons.badge_outlined,
-          label: 'License Number',
-          value: 'DL-123456',
-          textTheme: textTheme,
-        ),
-      ],
+  Widget _buildProfileInfo(TextTheme textTheme, dynamic driver) {
+    final dateFormat = DateFormat('MMM dd, yyyy');
+    
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.offWhite,
+        borderRadius: BorderRadius.circular(16.0),
+        border: Border.all(color: AppColors.dividerGrey, width: 1.0),
+      ),
+      child: Column(
+        children: [
+          _buildInfoItem(
+            icon: Icons.phone_outlined,
+            label: 'Mobile Number',
+            value: driver.mobile,
+            textTheme: textTheme,
+          ),
+          const Divider(height: 1.0),
+          if (driver.transporter != null)
+            _buildInfoItem(
+              icon: Icons.business_outlined,
+              label: 'Transporter',
+              value: driver.transporter.company ?? driver.transporter.name,
+              textTheme: textTheme,
+            ),
+          if (driver.transporter != null) const Divider(height: 1.0),
+          _buildInfoItem(
+            icon: Icons.account_balance_wallet_outlined,
+            label: 'Wallet Balance',
+            value: '₹${driver.walletBalance.toStringAsFixed(2)}',
+            textTheme: textTheme,
+          ),
+          const Divider(height: 1.0),
+          _buildInfoItem(
+            icon: Icons.info_outline,
+            label: 'Status',
+            value: driver.status.toUpperCase(),
+            textTheme: textTheme,
+          ),
+          const Divider(height: 1.0),
+          _buildInfoItem(
+            icon: Icons.calendar_today_outlined,
+            label: 'Member Since',
+            value: dateFormat.format(driver.createdAt),
+            textTheme: textTheme,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLanguageSection(BuildContext context, dynamic driver) {
+    final textTheme = Theme.of(context).textTheme;
+    final driverProvider = Provider.of<DriverProvider>(context, listen: false);
+    
+    final localizations = AppLocalizations.of(context)!;
+    final languages = [
+      {'code': AppConstants.languageEnglish, 'name': localizations.english},
+      {'code': AppConstants.languageHindi, 'name': localizations.hindi},
+      {'code': AppConstants.languageMarathi, 'name': localizations.marathi},
+    ];
+
+    return Container(
+      padding: const EdgeInsets.all(20.0),
+      decoration: BoxDecoration(
+        color: AppColors.offWhite,
+        borderRadius: BorderRadius.circular(16.0),
+        border: Border.all(color: AppColors.dividerGrey, width: 1.0),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.language, color: AppColors.primary, size: 24.0),
+              const SizedBox(width: 8.0),
+              Text(
+                AppLocalizations.of(context)!.languagePreference,
+                style: textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16.0),
+          ...languages.map((lang) {
+            return RadioListTile<String>(
+              title: Text(lang['name']!),
+              value: lang['code']!,
+              groupValue: driver.language ?? AppConstants.languageEnglish,
+              onChanged: driverProvider.isLoading
+                  ? null
+                  : (value) async {
+                      if (value != null) {
+                        final success = await driverProvider.updateLanguage(value);
+                        if (context.mounted) {
+                          if (success) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(AppLocalizations.of(context)!.languagePreferenceUpdated),
+                                backgroundColor: AppColors.success,
+                              ),
+                            );
+                          } else {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(driverProvider.error ?? AppLocalizations.of(context)!.failedToUpdateLanguage),
+                                backgroundColor: AppColors.error,
+                              ),
+                            );
+                          }
+                        }
+                      }
+                    },
+            );
+          }),
+        ],
+      ),
     );
   }
 

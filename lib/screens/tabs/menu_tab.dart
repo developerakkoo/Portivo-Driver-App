@@ -1,5 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../../core/theme/app_colors.dart';
+import '../../core/localization/app_localizations.dart';
+import '../../providers/auth_provider.dart';
+import '../../providers/trip_provider.dart';
+import '../../providers/driver_provider.dart';
 
 class MenuTab extends StatelessWidget {
   const MenuTab({super.key});
@@ -11,7 +16,7 @@ class MenuTab extends StatelessWidget {
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
-        title: const Text('Menu'),
+        title: Text(AppLocalizations.of(context)!.menu),
       ),
       body: SafeArea(
         child: ListView(
@@ -20,7 +25,7 @@ class MenuTab extends StatelessWidget {
             _buildMenuItem(
               context: context,
               icon: Icons.credit_card_outlined,
-              title: 'Fuel Cards',
+              title: AppLocalizations.of(context)!.fuelCards,
               onTap: () {
                 Navigator.of(context).pushNamed('/fuel-cards');
               },
@@ -28,7 +33,7 @@ class MenuTab extends StatelessWidget {
             _buildMenuItem(
               context: context,
               icon: Icons.local_shipping_outlined,
-              title: 'Trips',
+              title: AppLocalizations.of(context)!.trips,
               onTap: () {
                 // Navigate to main scaffold with trips tab
                 final navigator = Navigator.of(context);
@@ -41,7 +46,7 @@ class MenuTab extends StatelessWidget {
             _buildMenuItem(
               context: context,
               icon: Icons.account_balance_wallet_outlined,
-              title: 'Wallet',
+              title: AppLocalizations.of(context)!.wallet,
               onTap: () {
                 Navigator.of(context).pushNamed('/wallet');
               },
@@ -49,7 +54,7 @@ class MenuTab extends StatelessWidget {
             _buildMenuItem(
               context: context,
               icon: Icons.person_outline,
-              title: 'Profile',
+              title: AppLocalizations.of(context)!.profile,
               onTap: () {
                 Navigator.of(context).pushNamed('/profile');
               },
@@ -108,21 +113,42 @@ class MenuTab extends StatelessWidget {
           showDialog(
             context: context,
             builder: (context) => AlertDialog(
-              title: const Text('Logout'),
-              content: const Text('Are you sure you want to logout?'),
+              title: Text(AppLocalizations.of(context)!.logout),
+              content: Text(AppLocalizations.of(context)!.logoutConfirmation),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('Cancel'),
+                  child: Text(AppLocalizations.of(context)!.cancel),
                 ),
                 TextButton(
-                  onPressed: () {
+                  onPressed: () async {
+                    // Close dialog first
                     Navigator.of(context).pop();
-                    // TODO: Implement logout logic
-                    Navigator.of(context).pushReplacementNamed('/login');
+                    
+                    // Get providers before async operations
+                    final navigatorContext = Navigator.of(context, rootNavigator: true);
+                    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+                    final tripProvider = Provider.of<TripProvider>(context, listen: false);
+                    final driverProvider = Provider.of<DriverProvider>(context, listen: false);
+                    
+                    // Perform logout
+                    await authProvider.logout();
+                    
+                    // Clear other provider states
+                    tripProvider.clearAll();
+                    driverProvider.clearAll();
+                    
+                    // Small delay to ensure dialog is fully dismissed
+                    await Future.delayed(const Duration(milliseconds: 100));
+                    
+                    // Navigate to login page using root navigator and clear navigation stack
+                    navigatorContext.pushNamedAndRemoveUntil(
+                      '/login',
+                      (route) => false,
+                    );
                   },
                   child: Text(
-                    'Logout',
+                    AppLocalizations.of(context)!.logout,
                     style: TextStyle(color: AppColors.error),
                   ),
                 ),
@@ -137,7 +163,7 @@ class MenuTab extends StatelessWidget {
           ),
         ),
         child: Text(
-          'Logout',
+          AppLocalizations.of(context)!.logout,
           style: textTheme.labelLarge?.copyWith(
             color: AppColors.error,
             fontWeight: FontWeight.w600,

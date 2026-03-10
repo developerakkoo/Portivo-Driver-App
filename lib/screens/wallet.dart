@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../core/theme/app_colors.dart';
+import '../core/localization/app_localizations.dart';
 
 class WalletScreen extends StatelessWidget {
   const WalletScreen({super.key});
@@ -14,7 +15,7 @@ class WalletScreen extends StatelessWidget {
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
-        title: const Text('Wallet'),
+        title: Text(AppLocalizations.of(context)!.walletTitle),
       ),
       body: SafeArea(
         child: SingleChildScrollView(
@@ -23,7 +24,7 @@ class WalletScreen extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               // Balance Card
-              _buildBalanceCard(textTheme),
+              _buildBalanceCard(context, textTheme),
               const SizedBox(height: 24.0),
 
               // Action Buttons
@@ -31,7 +32,7 @@ class WalletScreen extends StatelessWidget {
               const SizedBox(height: 32.0),
 
               // Recent Transactions
-              _buildTransactionsSection(textTheme),
+              _buildTransactionsSection(context, textTheme),
             ],
           ),
         ),
@@ -39,7 +40,7 @@ class WalletScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildBalanceCard(TextTheme textTheme) {
+  Widget _buildBalanceCard(BuildContext context, TextTheme textTheme) {
     return Container(
       padding: const EdgeInsets.all(24.0),
       decoration: BoxDecoration(
@@ -50,7 +51,7 @@ class WalletScreen extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Available Balance',
+            AppLocalizations.of(context)!.walletBalance,
             style: textTheme.bodyMedium?.copyWith(
               color: AppColors.background.withOpacity(0.9),
             ),
@@ -124,12 +125,12 @@ class WalletScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildTransactionsSection(TextTheme textTheme) {
+  Widget _buildTransactionsSection(BuildContext context, TextTheme textTheme) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'Recent Transactions',
+          AppLocalizations.of(context)!.transactions,
           style: textTheme.titleLarge?.copyWith(
             fontWeight: FontWeight.w600,
             color: AppColors.textPrimary,
@@ -148,7 +149,7 @@ class WalletScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 16.0),
                 Text(
-                  'No transactions yet',
+                  AppLocalizations.of(context)!.noTransactions,
                   style: textTheme.bodyLarge?.copyWith(
                     color: AppColors.textSecondary,
                   ),

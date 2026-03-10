@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../core/theme/app_colors.dart';
+import '../core/localization/app_localizations.dart';
 
 class AccessPendingScreen extends StatefulWidget {
   const AccessPendingScreen({super.key});
@@ -70,7 +71,7 @@ class _AccessPendingScreenState extends State<AccessPendingScreen> {
 
               // Title
               Text(
-                'Access Pending',
+                AppLocalizations.of(context)!.accessPending,
                 style: textTheme.headlineLarge?.copyWith(
                   fontWeight: FontWeight.bold,
                   color: AppColors.textPrimary,
@@ -81,7 +82,7 @@ class _AccessPendingScreenState extends State<AccessPendingScreen> {
 
               // Message
               Text(
-                'Your access is pending approval from the transporter. Please wait for approval or contact your transporter for more information.',
+                AppLocalizations.of(context)!.accessPendingMessage,
                 style: textTheme.bodyLarge?.copyWith(
                   color: AppColors.textSecondary,
                 ),
@@ -95,7 +96,7 @@ class _AccessPendingScreenState extends State<AccessPendingScreen> {
                 child: ElevatedButton(
                   onPressed: () => _handleContactTransporter(context),
                   child: Text(
-                    'Contact Transporter',
+                    AppLocalizations.of(context)!.contactTransporter,
                     style: textTheme.labelLarge?.copyWith(
                       color: AppColors.background,
                       fontWeight: FontWeight.w600,
