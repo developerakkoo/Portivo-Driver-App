@@ -1,12 +1,17 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../core/theme/app_colors.dart';
 import '../core/localization/app_localizations.dart';
 import '../providers/auth_provider.dart';
+import '../providers/driver_provider.dart';
+import '../providers/notification_provider.dart';
 import '../services/socket_service.dart';
+import '../services/device_permission_service.dart';
+import '../widgets/device_permission_modal.dart';
 import 'tabs/home_tab.dart';
 import 'tabs/trips_tab.dart';
-import 'tabs/menu_tab.dart';
+import 'tabs/profile_tab.dart';
 
 class MainScaffold extends StatefulWidget {
   const MainScaffold({super.key});
@@ -17,13 +22,38 @@ class MainScaffold extends StatefulWidget {
 
 class _MainScaffoldState extends State<MainScaffold> {
   int _currentIndex = 0;
+  final DevicePermissionService _devicePermissionService = DevicePermissionService();
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _connectSocket();
+      _maybeShowPermissionModal();
+      _syncNotifications();
     });
+  }
+
+  Future<void> _syncNotifications() async {
+    if (!mounted) return;
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    if (auth.isAuthenticated) {
+      final notifications = Provider.of<NotificationProvider>(context, listen: false);
+      await notifications.syncUnreadBadge();
+    }
+  }
+
+  Future<void> _maybeShowPermissionModal() async {
+    if (!mounted) return;
+    try {
+      final show = await _devicePermissionService.shouldShowLoginPermissionModal();
+      if (!mounted || !show) return;
+      await DevicePermissionModal.show(context);
+    } catch (e) {
+      if (kDebugMode) {
+        print('MainScaffold: permission modal: $e');
+      }
+    }
   }
 
   void _connectSocket() {
@@ -33,6 +63,18 @@ class _MainScaffoldState extends State<MainScaffold> {
       final socketService = SocketService();
       socketService.connect().then((_) {
         socketService.joinDriverRoom(user.id);
+      });
+    } else if (authProvider.isAuthenticated) {
+      final driverProvider = Provider.of<DriverProvider>(context, listen: false);
+      driverProvider.loadProfile(refresh: true).then((_) {
+        final d = driverProvider.driver;
+        if (d != null && mounted) {
+          authProvider.syncUserFromDriver(d);
+          final socketService = SocketService();
+          socketService.connect().then((_) {
+            socketService.joinDriverRoom(d.id);
+          });
+        }
       });
     }
   }
@@ -46,14 +88,14 @@ class _MainScaffoldState extends State<MainScaffold> {
         label: localizations.home,
       ),
       NavigationDestination(
-        icon: const Icon(Icons.local_shipping_outlined),
-        selectedIcon: const Icon(Icons.local_shipping),
+        icon: const Icon(Icons.inventory_2_outlined),
+        selectedIcon: const Icon(Icons.inventory_2),
         label: localizations.trips,
       ),
       NavigationDestination(
-        icon: const Icon(Icons.menu_outlined),
-        selectedIcon: const Icon(Icons.menu),
-        label: localizations.menu,
+        icon: const Icon(Icons.person_outline),
+        selectedIcon: const Icon(Icons.person),
+        label: localizations.profile,
       ),
     ];
   }
@@ -75,7 +117,7 @@ class _MainScaffoldState extends State<MainScaffold> {
         children: const [
           HomeTab(),
           TripsTab(),
-          MenuTab(),
+          ProfileTab(),
         ],
       ),
       bottomNavigationBar: NavigationBar(

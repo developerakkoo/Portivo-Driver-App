@@ -7,7 +7,7 @@ class ApiConfig {
   static String get baseUrl {
     switch (_environment) {
       case 'development':
-        return 'http://localhost:3000/api';
+        return 'https://api.port.porttivo.com';
       case 'staging':
         return 'https://staging-api.port.porttivo.com/api';
       case 'production':
@@ -20,7 +20,7 @@ class ApiConfig {
   static String get socketUrl {
     switch (_environment) {
       case 'development':
-        return 'http://localhost:3000';
+        return 'https://api.port.porttivo.com';
       case 'staging':
         return 'https://staging-api.port.porttivo.com';
       case 'production':
@@ -43,12 +43,25 @@ class ApiConfig {
   // Trip endpoints
   static const String trips = '/trips';
   static String tripById(String id) => '/trips/$id';
+  static String tripUpdate(String id) => '/trips/$id';
+  static String tripAcceptDriver(String id) => '/trips/$id/accept-driver';
+  static String tripCancel(String id) => '/trips/$id/cancel';
   static String tripStart(String id) => '/trips/$id/start';
   static String tripComplete(String id) => '/trips/$id/complete';
   static String tripMilestone(String id, int milestoneNumber) => '/trips/$id/milestones/$milestoneNumber';
   static String tripCurrentMilestone(String id) => '/trips/$id/current-milestone';
   static String tripTimeline(String id) => '/trips/$id/timeline';
   static String tripPOD(String id) => '/trips/$id/pod';
+
+  // Notifications
+  static const String notifications = '/notifications';
+  static String notificationRead(String id) => '/notifications/$id/read';
+  static const String notificationsReadAll = '/notifications/read-all';
+  
+  // Fuel endpoints
+  static const String fuelCardAssigned = '/fuel-cards/assigned';
+  static const String fuelGenerateQR = '/fuel/generate-qr';
+  static const String fuelConfirm = '/fuel/confirm';
   
   // Timeout settings
   static const Duration connectTimeout = Duration(seconds: 30);

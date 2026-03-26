@@ -12,6 +12,7 @@ class TripModel {
   final TripLocation? dropLocation;
   final String tripType;
   final String status;
+  final DateTime? driverAcceptedAt;
   final List<MilestoneModel> milestones;
   final PODModel? pod;
   final CurrentMilestone? currentMilestone;
@@ -32,6 +33,7 @@ class TripModel {
     this.dropLocation,
     required this.tripType,
     required this.status,
+    this.driverAcceptedAt,
     required this.milestones,
     this.pod,
     this.currentMilestone,
@@ -58,6 +60,7 @@ class TripModel {
           : null,
       tripType: JsonParser.extractString(json['tripType'], 'EXPORT'),
       status: JsonParser.extractString(json['status'], 'PLANNED'),
+      driverAcceptedAt: JsonParser.extractDateTime(json['driverAcceptedAt']),
       milestones: JsonParser.extractList<MilestoneModel>(
         json['milestones'],
         (json) => MilestoneModel.fromJson(json),

@@ -6,15 +6,20 @@ import 'providers/auth_provider.dart';
 import 'providers/driver_provider.dart';
 import 'providers/trip_provider.dart';
 import 'providers/locale_provider.dart';
+import 'providers/notification_provider.dart';
+import 'screens/splash_screen.dart';
 import 'screens/login.dart';
 import 'screens/language_selection.dart';
 import 'screens/access_pending.dart';
 import 'screens/main_scaffold.dart';
 import 'screens/wallet.dart';
 import 'screens/fuel_cards.dart';
+import 'screens/fuel_qr_screen.dart';
 import 'screens/profile.dart';
 import 'screens/active_trip_screen.dart';
 import 'screens/pod_upload_screen.dart';
+import 'screens/trip_detail_screen.dart';
+import 'screens/notifications_screen.dart';
 import 'services/storage_service.dart';
 
 /// Custom delegate that uses a specific locale regardless of MaterialApp's locale
@@ -37,10 +42,9 @@ class _AppLocalizationsDelegateWithLocale extends LocalizationsDelegate<AppLocal
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // Initialize storage service
+
   await StorageService().init();
-  
+
   runApp(const MyApp());
 }
 
@@ -66,7 +70,17 @@ class _MyAppState extends State<MyApp> {
             return driverProvider;
           },
         ),
-        ChangeNotifierProvider(create: (_) => TripProvider()),
+        ChangeNotifierProvider(create: (_) => NotificationProvider()),
+        ChangeNotifierProvider(
+          create: (context) {
+            final notifications = Provider.of<NotificationProvider>(context, listen: false);
+            return TripProvider(
+              onTripDriverAssigned: () {
+                notifications.refreshUnreadCount();
+              },
+            );
+          },
+        ),
       ],
       child: Consumer2<LocaleProvider, DriverProvider>(
         builder: (context, localeProvider, driverProvider, _) {
@@ -96,21 +110,34 @@ class _MyAppState extends State<MyApp> {
                 localeProvider.currentLocale ?? const Locale('en'),
               ),
             ],
-            initialRoute: '/login',
+            initialRoute: '/splash',
             routes: {
+              '/splash': (context) => const SplashScreen(),
               '/login': (context) => const LoginScreen(),
               '/language-selection': (context) => const LanguageSelectionScreen(),
               '/access-pending': (context) => const AccessPendingScreen(),
               '/home': (context) => const MainScaffold(),
               '/wallet': (context) => const WalletScreen(),
               '/fuel-cards': (context) => const FuelCardsScreen(),
+              '/fuel-qr': (context) => const FuelQRScreen(),
               '/profile': (context) => const ProfileScreen(),
+              '/notifications': (context) => const NotificationsScreen(),
             },
             onGenerateRoute: (settings) {
               if (settings.name == '/active-trip') {
                 final tripId = settings.arguments as String;
                 return MaterialPageRoute(
                   builder: (_) => ActiveTripScreen(tripId: tripId),
+                );
+              }
+              if (settings.name == '/trip-detail') {
+                final tripId = settings.arguments as String;
+                return MaterialPageRoute(
+                  builder: (_) => TripDetailScreen(),
+                  settings: RouteSettings(
+                    name: '/trip-detail',
+                    arguments: tripId,
+                  ),
                 );
               }
               if (settings.name == '/pod-upload') {

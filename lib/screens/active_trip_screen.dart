@@ -5,6 +5,9 @@ import '../core/localization/app_localizations.dart';
 import '../providers/trip_provider.dart';
 import '../models/trip_model.dart';
 import '../core/constants/app_constants.dart';
+import '../core/config/api_config.dart';
+import '../services/location_stream_service.dart';
+import '../services/socket_service.dart';
 import 'milestone_update_screen.dart';
 import 'pod_upload_screen.dart';
 
@@ -18,12 +21,80 @@ class ActiveTripScreen extends StatefulWidget {
 }
 
 class _ActiveTripScreenState extends State<ActiveTripScreen> {
+  final LocationStreamService _locationStreamService = LocationStreamService();
+  final SocketService _socketService = SocketService();
+  bool _locationStreamActive = false;
+  bool _locationStreamStartFailed = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadTrip();
     });
+  }
+
+  @override
+  void dispose() {
+    if (_locationStreamActive) {
+      _locationStreamService.stop();
+      _locationStreamActive = false;
+    }
+    _locationStreamStartFailed = false;
+    super.dispose();
+  }
+
+  Future<void> _startLocationStreamIfNeeded(TripModel trip) async {
+    if (trip.status != AppConstants.tripStatusActive) return;
+    if (_locationStreamActive || _locationStreamStartFailed) return;
+
+    _locationStreamService.onPositionUpdate = (lat, lng) {
+      _socketService.emitDriverLocationUpdate(
+        tripId: trip.id,
+        latitude: lat,
+        longitude: lng,
+      );
+    };
+    final result = await _locationStreamService.start();
+    if (!mounted) return;
+
+    if (result == LocationStreamStartResult.started ||
+        result == LocationStreamStartResult.alreadyRunning) {
+      _locationStreamActive = true;
+      return;
+    }
+
+    _locationStreamStartFailed = true;
+    String? message;
+    switch (result) {
+      case LocationStreamStartResult.permissionDenied:
+        message =
+            'Location permission is required for live tracking. Enable it in system settings.';
+        break;
+      case LocationStreamStartResult.locationServiceDisabled:
+        message =
+            'Turn on location services so the transporter can see your position.';
+        break;
+      case LocationStreamStartResult.failed:
+        message = 'Could not get GPS position. Check location settings.';
+        break;
+      default:
+        break;
+    }
+    if (message != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    }
+  }
+
+  void _stopLocationStreamIfNeeded(TripModel trip) {
+    if (trip.status == AppConstants.tripStatusActive) return;
+    if (!_locationStreamActive && !_locationStreamStartFailed) return;
+
+    _locationStreamService.stop();
+    _locationStreamActive = false;
+    _locationStreamStartFailed = false;
   }
 
   Future<void> _loadTrip() async {
@@ -78,6 +149,17 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
             return const Center(child: CircularProgressIndicator());
           }
 
+          if (trip != null) {
+            final t = trip;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (t.status == AppConstants.tripStatusActive) {
+                _startLocationStreamIfNeeded(t);
+              } else {
+                _stopLocationStreamIfNeeded(t);
+              }
+            });
+          }
+
           if (trip == null) {
             return RefreshIndicator(
               onRefresh: _loadTrip,
@@ -126,12 +208,19 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                   const SizedBox(height: 24.0),
                   _buildLocations(context, trip),
                   const SizedBox(height: 24.0),
-                  if (trip.milestones.length < 5)
-                    _buildUpdateMilestoneButton(context, trip)
-                  else if (trip.status == AppConstants.tripStatusCompleted && trip.pod == null)
+                  if (trip.status == AppConstants.tripStatusPodPending &&
+                      trip.pod?.photo != null &&
+                      (trip.pod!.photo?.isNotEmpty ?? false))
+                    _buildPODUploadedSection(context, trip)
+                  else if (trip.status == AppConstants.tripStatusPodPending &&
+                      (trip.pod == null ||
+                          trip.pod!.photo == null ||
+                          (trip.pod!.photo?.isEmpty ?? true)))
                     _buildUploadPODButton(context, trip)
-                  else if (trip.status == AppConstants.tripStatusCompleted)
-                    _buildCompleteTripButton(context, trip),
+                  else if (trip.milestones.length == 4 && trip.status == AppConstants.tripStatusActive)
+                    _buildUploadPODButton(context, trip)
+                  else if (trip.milestones.length < 4)
+                    _buildUpdateMilestoneButton(context, trip),
                 ],
               ),
             ),
@@ -141,8 +230,57 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
     );
   }
 
+  Future<void> _showContainerEditDialog(BuildContext context, TripModel trip) async {
+    final controller = TextEditingController(text: trip.containerNumber ?? '');
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(AppLocalizations.of(context)!.container),
+        content: TextField(
+          controller: controller,
+          textCapitalization: TextCapitalization.characters,
+          decoration: InputDecoration(
+            labelText: AppLocalizations.of(context)!.container,
+            hintText: 'Enter container number',
+          ),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(controller.text.trim().toUpperCase()),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (result != null && mounted) {
+      final tripProvider = Provider.of<TripProvider>(context, listen: false);
+      final success = await tripProvider.updateTrip(trip.id, {'containerNumber': result.isEmpty ? null : result});
+      if (mounted) {
+        if (success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Container number updated'), backgroundColor: Colors.green),
+          );
+          _loadTrip();
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(tripProvider.error ?? 'Failed to update container'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    }
+  }
+
   Widget _buildTripInfo(BuildContext context, TripModel trip) {
     final textTheme = Theme.of(context).textTheme;
+    final canEditContainer = trip.status == AppConstants.tripStatusPlanned || trip.status == AppConstants.tripStatusActive;
     return Container(
       padding: const EdgeInsets.all(20.0),
       decoration: BoxDecoration(
@@ -162,12 +300,52 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
           ),
           const SizedBox(height: 16.0),
           _buildInfoRow(AppLocalizations.of(context)!.tripId, trip.tripId, textTheme),
-          if (trip.containerNumber != null)
-            _buildInfoRow(AppLocalizations.of(context)!.container, trip.containerNumber!, textTheme),
+          _buildContainerRow(context, trip, textTheme, canEditContainer),
           if (trip.reference != null)
             _buildInfoRow(AppLocalizations.of(context)!.reference, trip.reference!, textTheme),
           _buildInfoRow(AppLocalizations.of(context)!.type, trip.tripType, textTheme),
           _buildInfoRow(AppLocalizations.of(context)!.status, trip.status.replaceAll('_', ' '), textTheme),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildContainerRow(BuildContext context, TripModel trip, TextTheme textTheme, bool canEdit) {
+    final value = trip.containerNumber ?? 'Not set';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12.0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 100.0,
+            child: Text(
+              AppLocalizations.of(context)!.container,
+              style: textTheme.bodyMedium?.copyWith(
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: textTheme.bodyMedium?.copyWith(
+                color: trip.containerNumber != null ? AppColors.textPrimary : AppColors.textMuted,
+                fontWeight: FontWeight.w500,
+                fontStyle: trip.containerNumber != null ? FontStyle.normal : FontStyle.italic,
+              ),
+            ),
+          ),
+          if (canEdit)
+            IconButton(
+              icon: Icon(
+                trip.containerNumber != null ? Icons.edit_outlined : Icons.add_circle_outline,
+                size: 20.0,
+                color: AppColors.primary,
+              ),
+              onPressed: () => _showContainerEditDialog(context, trip),
+              tooltip: trip.containerNumber != null ? 'Edit container' : 'Add container',
+            ),
         ],
       ),
     );
@@ -392,6 +570,63 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
     );
   }
 
+  Widget _buildPODUploadedSection(BuildContext context, TripModel trip) {
+    final textTheme = Theme.of(context).textTheme;
+    final podPhotoUrl = trip.pod?.photo != null
+        ? ApiConfig.baseUrl.replaceAll('/api', '') + trip.pod!.photo!
+        : null;
+
+    return Container(
+      padding: const EdgeInsets.all(20.0),
+      decoration: BoxDecoration(
+        color: AppColors.offWhite,
+        borderRadius: BorderRadius.circular(16.0),
+        border: Border.all(color: AppColors.success.withOpacity(0.5), width: 1.0),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.check_circle, color: AppColors.success, size: 24.0),
+              const SizedBox(width: 8.0),
+              Expanded(
+                child: Text(
+                  'POD uploaded - awaiting transporter approval',
+                  style: textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textPrimary,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 2,
+                ),
+              ),
+            ],
+          ),
+          if (podPhotoUrl != null) ...[
+            const SizedBox(height: 16.0),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(12.0),
+              child: Image.network(
+                podPhotoUrl,
+                height: 200,
+                width: double.infinity,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Container(
+                  height: 200,
+                  color: AppColors.dividerGrey,
+                  child: Center(
+                    child: Icon(Icons.broken_image, size: 48, color: AppColors.textMuted),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _buildUploadPODButton(BuildContext context, TripModel trip) {
     return SizedBox(
       height: 52.0,
@@ -417,57 +652,4 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
     );
   }
 
-  Widget _buildCompleteTripButton(BuildContext context, TripModel trip) {
-    return Consumer<TripProvider>(
-      builder: (context, tripProvider, _) {
-        return SizedBox(
-          height: 52.0,
-          child: ElevatedButton(
-            onPressed: tripProvider.isLoading
-                ? null
-                : () async {
-                    final success = await tripProvider.completeTrip(trip.id);
-                    if (context.mounted) {
-                      if (success) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(AppLocalizations.of(context)!.tripCompletedSuccessfully),
-                            backgroundColor: AppColors.success,
-                          ),
-                        );
-                        Navigator.of(context).pop();
-                      } else {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(tripProvider.error ?? AppLocalizations.of(context)!.failedToCompleteTrip),
-                            backgroundColor: AppColors.error,
-                          ),
-                        );
-                      }
-                    }
-                  },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.success,
-            ),
-            child: tripProvider.isLoading
-            ? const SizedBox(
-                height: 20.0,
-                width: 20.0,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2.0,
-                  valueColor: AlwaysStoppedAnimation<Color>(AppColors.background),
-                ),
-              )
-            : Text(
-                AppLocalizations.of(context)!.completeTrip,
-                style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                      color: AppColors.background,
-                      fontWeight: FontWeight.w600,
-                    ),
-              ),
-          ),
-        );
-      },
-    );
-  }
 }

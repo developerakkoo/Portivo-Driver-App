@@ -1,11 +1,15 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
-import 'dart:io';
-import '../core/theme/app_colors.dart';
+import 'package:provider/provider.dart';
+
 import '../core/localization/app_localizations.dart';
+import '../core/theme/app_colors.dart';
+import '../core/utils/image_utils.dart';
 import '../providers/trip_provider.dart';
+import '../services/device_permission_service.dart';
 
 class MilestoneUpdateScreen extends StatefulWidget {
   final String tripId;
@@ -22,75 +26,92 @@ class MilestoneUpdateScreen extends StatefulWidget {
 }
 
 class _MilestoneUpdateScreenState extends State<MilestoneUpdateScreen> {
-  Position? _currentPosition;
-  File? _photo;
-  bool _isLoadingLocation = false;
-  bool _isSubmitting = false;
-  String? _errorMessage;
+  final DevicePermissionService _permService = DevicePermissionService();
   final ImagePicker _imagePicker = ImagePicker();
+
+  Position? _currentPosition;
+  final List<File> _photos = [];
+  bool _isSubmitting = false;
+  bool _isLoadingLocation = true;
+  String? _errorMessage;
+  String? _locationError;
 
   @override
   void initState() {
     super.initState();
-    _getCurrentLocation();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _resolveLocation());
   }
 
-  Future<void> _getCurrentLocation() async {
+  Future<void> _resolveLocation() async {
+    if (!mounted) return;
     setState(() {
       _isLoadingLocation = true;
+      _locationError = null;
       _errorMessage = null;
+      _currentPosition = null;
     });
 
     try {
-      // Check if location services are enabled
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      await _permService.requestMilestonePermissions();
+
+      if (!await _permService.isLocationEffectivelyGranted()) {
+        if (!mounted) return;
+        setState(() {
+          _isLoadingLocation = false;
+          _locationError =
+              'Location permission is required. Tap Retry after granting, or open system settings.';
+        });
+        return;
+      }
+
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
+        if (!mounted) return;
         setState(() {
-          _errorMessage = 'Location services are disabled. Please enable them in settings.';
           _isLoadingLocation = false;
+          _locationError =
+              'Location services are off. Turn on GPS/location in system settings, then tap Retry.';
         });
         return;
       }
 
-      // Check location permissions
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) {
-          setState(() {
-            _errorMessage = 'Location permissions are denied. Please grant location access.';
-            _isLoadingLocation = false;
-          });
-          return;
-        }
-      }
-
-      if (permission == LocationPermission.deniedForever) {
-        setState(() {
-          _errorMessage = 'Location permissions are permanently denied. Please enable them in settings.';
-          _isLoadingLocation = false;
-        });
-        return;
-      }
-
-      // Get current position
-      Position position = await Geolocator.getCurrentPosition(
+      final position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 30),
       );
 
+      if (!mounted) return;
       setState(() {
         _currentPosition = position;
         _isLoadingLocation = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
-        _errorMessage = 'Failed to get location: $e';
         _isLoadingLocation = false;
+        _locationError = 'Could not get location: $e';
       });
     }
   }
 
+  Future<void> _openSystemSettings() async {
+    await _permService.openSettings();
+  }
+
   Future<void> _pickImage() async {
+    setState(() => _errorMessage = null);
+
+    if (!await _permService.isCameraEffectivelyGranted()) {
+      await _permService.requestMilestonePermissions();
+    }
+    if (!await _permService.isCameraEffectivelyGranted()) {
+      setState(() {
+        _errorMessage =
+            'Camera permission is required to capture milestone photos. Grant it in settings if needed.';
+      });
+      return;
+    }
+
     try {
       final XFile? image = await _imagePicker.pickImage(
         source: ImageSource.camera,
@@ -99,7 +120,7 @@ class _MilestoneUpdateScreenState extends State<MilestoneUpdateScreen> {
 
       if (image != null) {
         setState(() {
-          _photo = File(image.path);
+          _photos.add(File(image.path));
         });
       }
     } catch (e) {
@@ -109,18 +130,23 @@ class _MilestoneUpdateScreenState extends State<MilestoneUpdateScreen> {
     }
   }
 
+  void _removePhoto(int index) {
+    setState(() {
+      _photos.removeAt(index);
+    });
+  }
+
   Future<void> _submitMilestone() async {
-    if (_currentPosition == null) {
+    if (_isLoadingLocation || _currentPosition == null) {
       setState(() {
-        _errorMessage = 'Please wait for location to be fetched';
+        _errorMessage = 'Wait until your location is ready, or fix the issue above and tap Retry.';
       });
       return;
     }
 
-    // Milestone 1 requires photo
-    if (widget.milestoneNumber == 1 && _photo == null) {
+    if (_photos.isEmpty) {
       setState(() {
-        _errorMessage = 'Photo is required for milestone 1';
+        _errorMessage = 'At least one photo is required for this milestone';
       });
       return;
     }
@@ -132,12 +158,33 @@ class _MilestoneUpdateScreenState extends State<MilestoneUpdateScreen> {
 
     final tripProvider = Provider.of<TripProvider>(context, listen: false);
 
+    final photoPathsToUpload = <String>[];
+    for (var i = 0; i < _photos.length; i++) {
+      try {
+        final watermarked = await ImageUtils.addWatermark(
+          _photos[i].path,
+          timestamp: DateTime.now(),
+          latitude: _currentPosition!.latitude,
+          longitude: _currentPosition!.longitude,
+        );
+        photoPathsToUpload.add(watermarked);
+      } catch (e) {
+        if (mounted) {
+          setState(() {
+            _isSubmitting = false;
+            _errorMessage = 'Failed to add watermark to photo ${i + 1}: $e';
+          });
+        }
+        return;
+      }
+    }
+
     final success = await tripProvider.updateMilestone(
       widget.tripId,
       widget.milestoneNumber,
       latitude: _currentPosition!.latitude,
       longitude: _currentPosition!.longitude,
-      photoPath: _photo?.path,
+      photoPaths: photoPathsToUpload,
     );
 
     if (!mounted) return;
@@ -153,11 +200,11 @@ class _MilestoneUpdateScreenState extends State<MilestoneUpdateScreen> {
           backgroundColor: AppColors.success,
         ),
       );
-      // Pop and let the parent screen refresh via socket events
       Navigator.of(context).pop(true);
     } else {
       setState(() {
-        _errorMessage = tripProvider.error ?? AppLocalizations.of(context)!.failedToUpdateMilestone;
+        _errorMessage =
+            tripProvider.error ?? AppLocalizations.of(context)!.failedToUpdateMilestone;
       });
     }
   }
@@ -183,6 +230,10 @@ class _MilestoneUpdateScreenState extends State<MilestoneUpdateScreen> {
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
+    final canSubmit = !_isSubmitting &&
+        !_isLoadingLocation &&
+        _currentPosition != null &&
+        _locationError == null;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -194,7 +245,6 @@ class _MilestoneUpdateScreenState extends State<MilestoneUpdateScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Milestone Info
             Container(
               padding: const EdgeInsets.all(20.0),
               decoration: BoxDecoration(
@@ -222,15 +272,13 @@ class _MilestoneUpdateScreenState extends State<MilestoneUpdateScreen> {
             ),
             const SizedBox(height: 24.0),
 
-            // Location Section
-            _buildLocationSection(textTheme),
+            _buildLocationCard(textTheme),
+
             const SizedBox(height: 24.0),
 
-            // Photo Section
-            if (widget.milestoneNumber == 1) _buildPhotoSection(textTheme),
-            if (widget.milestoneNumber == 1) const SizedBox(height: 24.0),
+            _buildPhotoSection(textTheme),
+            const SizedBox(height: 24.0),
 
-            // Error Message
             if (_errorMessage != null) ...[
               Container(
                 padding: const EdgeInsets.all(12.0),
@@ -255,13 +303,10 @@ class _MilestoneUpdateScreenState extends State<MilestoneUpdateScreen> {
               const SizedBox(height: 24.0),
             ],
 
-            // Submit Button
             SizedBox(
               height: 52.0,
               child: ElevatedButton(
-                onPressed: (_isSubmitting || _isLoadingLocation || _currentPosition == null)
-                    ? null
-                    : _submitMilestone,
+                onPressed: (_isSubmitting || !canSubmit) ? null : _submitMilestone,
                 child: _isSubmitting
                     ? const SizedBox(
                         height: 20.0,
@@ -286,7 +331,7 @@ class _MilestoneUpdateScreenState extends State<MilestoneUpdateScreen> {
     );
   }
 
-  Widget _buildLocationSection(TextTheme textTheme) {
+  Widget _buildLocationCard(TextTheme textTheme) {
     return Container(
       padding: const EdgeInsets.all(20.0),
       decoration: BoxDecoration(
@@ -299,10 +344,10 @@ class _MilestoneUpdateScreenState extends State<MilestoneUpdateScreen> {
         children: [
           Row(
             children: [
-              Icon(Icons.location_on, color: AppColors.primary, size: 24.0),
+              Icon(Icons.my_location, color: AppColors.primary, size: 24.0),
               const SizedBox(width: 8.0),
               Text(
-                'GPS Location',
+                'Location for milestone',
                 style: textTheme.titleMedium?.copyWith(
                   fontWeight: FontWeight.bold,
                   color: AppColors.textPrimary,
@@ -311,77 +356,70 @@ class _MilestoneUpdateScreenState extends State<MilestoneUpdateScreen> {
             ],
           ),
           const SizedBox(height: 16.0),
-          if (_isLoadingLocation)
-            const Center(child: CircularProgressIndicator())
-          else if (_currentPosition != null)
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+          if (_isLoadingLocation) ...[
+            Row(
               children: [
-                _buildLocationRow('Latitude', _currentPosition!.latitude.toStringAsFixed(6), textTheme),
-                const SizedBox(height: 8.0),
-                _buildLocationRow('Longitude', _currentPosition!.longitude.toStringAsFixed(6), textTheme),
-                const SizedBox(height: 12.0),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: _getCurrentLocation,
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Refresh Location'),
+                const SizedBox(
+                  width: 28.0,
+                  height: 28.0,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.5,
+                    color: AppColors.primary,
                   ),
                 ),
-              ],
-            )
-          else
-            Column(
-              children: [
-                Text(
-                  'Location not available',
-                  style: textTheme.bodyMedium?.copyWith(
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-                const SizedBox(height: 12.0),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    onPressed: _getCurrentLocation,
-                    icon: const Icon(Icons.location_searching),
-                    label: const Text('Get Location'),
+                const SizedBox(width: 16.0),
+                Expanded(
+                  child: Text(
+                    'Getting your location…',
+                    style: textTheme.bodyMedium?.copyWith(color: AppColors.textSecondary),
                   ),
                 ),
               ],
             ),
+          ] else if (_locationError != null) ...[
+            Text(
+              _locationError!,
+              style: textTheme.bodyMedium?.copyWith(color: AppColors.error),
+            ),
+            const SizedBox(height: 12.0),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _resolveLocation,
+                    child: const Text('Retry'),
+                  ),
+                ),
+                const SizedBox(width: 12.0),
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _openSystemSettings,
+                    child: const Text('Settings'),
+                  ),
+                ),
+              ],
+            ),
+          ] else if (_currentPosition != null) ...[
+            Row(
+              children: [
+                Icon(Icons.check_circle, color: AppColors.success, size: 22.0),
+                const SizedBox(width: 8.0),
+                Expanded(
+                  child: Text(
+                    'Location ready (${_currentPosition!.latitude.toStringAsFixed(5)}, ${_currentPosition!.longitude.toStringAsFixed(5)})',
+                    style: textTheme.bodyMedium?.copyWith(color: AppColors.textPrimary),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );
   }
 
-  Widget _buildLocationRow(String label, String value, TextTheme textTheme) {
-    return Row(
-      children: [
-        SizedBox(
-          width: 80.0,
-          child: Text(
-            label,
-            style: textTheme.bodySmall?.copyWith(
-              color: AppColors.textSecondary,
-            ),
-          ),
-        ),
-        Expanded(
-          child: Text(
-            value,
-            style: textTheme.bodyMedium?.copyWith(
-              color: AppColors.textPrimary,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
   Widget _buildPhotoSection(TextTheme textTheme) {
+    const double cellSize = 88.0;
     return Container(
       padding: const EdgeInsets.all(20.0),
       decoration: BoxDecoration(
@@ -397,7 +435,7 @@ class _MilestoneUpdateScreenState extends State<MilestoneUpdateScreen> {
               Icon(Icons.camera_alt, color: AppColors.primary, size: 24.0),
               const SizedBox(width: 8.0),
               Text(
-                'Photo (Required)',
+                'Photos (Required)',
                 style: textTheme.titleMedium?.copyWith(
                   fontWeight: FontWeight.bold,
                   color: AppColors.textPrimary,
@@ -406,42 +444,74 @@ class _MilestoneUpdateScreenState extends State<MilestoneUpdateScreen> {
             ],
           ),
           const SizedBox(height: 16.0),
-          if (_photo != null)
-            Column(
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(12.0),
-                  child: Image.file(
-                    _photo!,
-                    height: 200.0,
-                    width: double.infinity,
-                    fit: BoxFit.cover,
+          Wrap(
+            spacing: 12.0,
+            runSpacing: 12.0,
+            children: [
+              ..._photos.asMap().entries.map((entry) {
+                final index = entry.key;
+                final photo = entry.value;
+                return SizedBox(
+                  width: cellSize,
+                  height: cellSize,
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(8.0),
+                        child: Image.file(
+                          photo,
+                          width: cellSize,
+                          height: cellSize,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                      Positioned(
+                        top: -6.0,
+                        right: -6.0,
+                        child: GestureDetector(
+                          onTap: () => _removePhoto(index),
+                          child: Container(
+                            padding: const EdgeInsets.all(4.0),
+                            decoration: BoxDecoration(
+                              color: AppColors.error,
+                              shape: BoxShape.circle,
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.3),
+                                  blurRadius: 4.0,
+                                ),
+                              ],
+                            ),
+                            child: const Icon(Icons.close, size: 16.0, color: Colors.white),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-                const SizedBox(height: 12.0),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: _pickImage,
-                    icon: const Icon(Icons.camera_alt),
-                    label: const Text('Retake Photo'),
+                );
+              }),
+              SizedBox(
+                width: cellSize,
+                height: cellSize,
+                child: GestureDetector(
+                  onTap: _pickImage,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(8.0),
+                      border: Border.all(
+                        color: AppColors.primary.withOpacity(0.6),
+                        width: 2.0,
+                      ),
+                    ),
+                    child: const Center(
+                      child: Icon(Icons.add, size: 36.0, color: AppColors.primary),
+                    ),
                   ),
-                ),
-              ],
-            )
-          else
-            SizedBox(
-              width: double.infinity,
-              height: 200.0,
-              child: OutlinedButton.icon(
-                onPressed: _pickImage,
-                icon: const Icon(Icons.camera_alt, size: 48.0),
-                label: Text(AppLocalizations.of(context)!.capturePhoto),
-                style: OutlinedButton.styleFrom(
-                  padding: const EdgeInsets.all(24.0),
                 ),
               ),
-            ),
+            ],
+          ),
         ],
       ),
     );

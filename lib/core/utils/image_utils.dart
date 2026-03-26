@@ -6,9 +6,13 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 
 /// Image utility class for compression and resizing
+/// Targets <500KB for nginx compatibility (client_max_body_size often 1MB)
 class ImageUtils {
-  /// Maximum file size in bytes (2MB)
-  static const int maxFileSizeBytes = 2 * 1024 * 1024;
+  /// Target max size to stay under nginx limits (500KB)
+  static const int targetMaxBytes = 500 * 1024;
+  
+  /// Compress images larger than this (600KB)
+  static const int maxFileSizeBytes = 600 * 1024;
   
   /// Maximum image width/height for compression
   static const int maxImageDimension = 1920;
@@ -17,7 +21,7 @@ class ImageUtils {
   static const int jpegQuality = 85;
 
   /// Compress and resize image if needed
-  /// Returns the path to the compressed image file
+  /// Returns the path to the compressed image file (targets <500KB)
   static Future<String> compressImage(String imagePath) async {
     try {
       final file = File(imagePath);
@@ -25,7 +29,6 @@ class ImageUtils {
         throw Exception('Image file does not exist');
       }
 
-      // Check file size
       final fileSize = await file.length();
       if (fileSize <= maxFileSizeBytes) {
         if (kDebugMode) {
@@ -38,46 +41,42 @@ class ImageUtils {
         print('ImageUtils: Compressing image from $fileSize bytes');
       }
 
-      // Read image bytes
       final imageBytes = await file.readAsBytes();
-      
-      // Decode image
-      img.Image? image = img.decodeImage(imageBytes);
-      if (image == null) {
+      img.Image? decoded = img.decodeImage(imageBytes);
+      if (decoded == null) {
         throw Exception('Failed to decode image');
       }
+      img.Image image = decoded;
 
-      // Resize if needed
-      if (image.width > maxImageDimension || image.height > maxImageDimension) {
-        if (kDebugMode) {
-          print('ImageUtils: Resizing image from ${image.width}x${image.height}');
+      int currentQuality = jpegQuality;
+      int currentDimension = maxImageDimension;
+      Uint8List compressedBytes = Uint8List.fromList(
+        img.encodeJpg(image, quality: currentQuality),
+      );
+
+      // Iteratively reduce until under target
+      while (compressedBytes.length > targetMaxBytes &&
+          (currentQuality > 30 || currentDimension > 640)) {
+        if (currentQuality > 30) {
+          currentQuality = (currentQuality - 15).clamp(30, 100);
+          compressedBytes = Uint8List.fromList(
+            img.encodeJpg(image, quality: currentQuality),
+          );
         }
-        image = img.copyResize(
-          image,
-          width: image.width > image.height ? maxImageDimension : null,
-          height: image.height > image.width ? maxImageDimension : null,
-          maintainAspect: true,
-        );
-        if (kDebugMode) {
-          print('ImageUtils: Resized to ${image.width}x${image.height}');
+        if (compressedBytes.length > targetMaxBytes && currentDimension > 640) {
+          currentDimension = (currentDimension * 0.75).round().clamp(640, 1920);
+          image = img.copyResize(
+            image,
+            width: image.width > image.height ? currentDimension : null,
+            height: image.height > image.width ? currentDimension : null,
+            maintainAspect: true,
+          );
+          compressedBytes = Uint8List.fromList(
+            img.encodeJpg(image, quality: currentQuality),
+          );
         }
       }
 
-      // Compress image
-      Uint8List compressedBytes;
-      final extension = path.extension(imagePath).toLowerCase();
-      
-      if (extension == '.png') {
-        // PNG compression
-        compressedBytes = Uint8List.fromList(img.encodePng(image));
-      } else {
-        // JPEG compression (default)
-        compressedBytes = Uint8List.fromList(
-          img.encodeJpg(image, quality: jpegQuality),
-        );
-      }
-
-      // Check if compression helped
       if (compressedBytes.length >= fileSize) {
         if (kDebugMode) {
           print('ImageUtils: Compression did not reduce size, using original');
@@ -85,14 +84,12 @@ class ImageUtils {
         return imagePath;
       }
 
-      // Save compressed image to temporary file
       final tempDir = await getTemporaryDirectory();
       final fileName = path.basenameWithoutExtension(imagePath);
       final compressedPath = path.join(
         tempDir.path,
         '${fileName}_compressed_${DateTime.now().millisecondsSinceEpoch}.jpg',
       );
-
       final compressedFile = File(compressedPath);
       await compressedFile.writeAsBytes(compressedBytes);
 
@@ -107,7 +104,6 @@ class ImageUtils {
         print('ImageUtils: Error compressing image: $e');
         print('Stack: $stackTrace');
       }
-      // Return original path if compression fails
       return imagePath;
     }
   }
@@ -128,9 +124,67 @@ class ImageUtils {
     }
   }
 
-  /// Check if image needs compression
+  /// Check if image needs compression (e.g. >600KB for nginx safety)
   static Future<bool> needsCompression(String imagePath) async {
     final fileSize = await getFileSize(imagePath);
     return fileSize > maxFileSizeBytes;
+  }
+
+  /// Add timestamp and location watermark to image
+  /// Returns path to watermarked image file
+  static Future<String> addWatermark(
+    String imagePath, {
+    required DateTime timestamp,
+    required double latitude,
+    required double longitude,
+  }) async {
+    try {
+      final file = File(imagePath);
+      if (!await file.exists()) {
+        throw Exception('Image file does not exist');
+      }
+
+      final imageBytes = await file.readAsBytes();
+      img.Image? image = img.decodeImage(imageBytes);
+      if (image == null) {
+        throw Exception('Failed to decode image');
+      }
+
+      final timestampStr = '${timestamp.toIso8601String()}';
+      final locationStr = '${latitude.toStringAsFixed(6)}, ${longitude.toStringAsFixed(6)}';
+
+      // Use arial24 font (built-in)
+      final font = img.arial24;
+      final textColor = img.ColorRgba8(255, 255, 255, 230);
+      final shadowColor = img.ColorRgba8(0, 0, 0, 180);
+
+      // Draw at bottom-left with slight padding; add shadow for readability
+      const padding = 12;
+      final y1 = image.height - padding - 48;
+      final y2 = image.height - padding - 24;
+
+      // Shadow offset
+      img.drawString(image, timestampStr, font: font, x: padding + 1, y: y1 + 1, color: shadowColor);
+      img.drawString(image, locationStr, font: font, x: padding + 1, y: y2 + 1, color: shadowColor);
+      // Main text
+      img.drawString(image, timestampStr, font: font, x: padding, y: y1, color: textColor);
+      img.drawString(image, locationStr, font: font, x: padding, y: y2, color: textColor);
+
+      final tempDir = await getTemporaryDirectory();
+      final watermarkedPath = path.join(
+        tempDir.path,
+        'watermarked_${DateTime.now().millisecondsSinceEpoch}.jpg',
+      );
+      final watermarkedFile = File(watermarkedPath);
+      await watermarkedFile.writeAsBytes(img.encodeJpg(image, quality: jpegQuality));
+
+      return watermarkedPath;
+    } catch (e, stackTrace) {
+      if (kDebugMode) {
+        print('ImageUtils: Error adding watermark: $e');
+        print('Stack: $stackTrace');
+      }
+      return imagePath;
+    }
   }
 }

@@ -154,18 +154,6 @@ class _LoginScreenState extends State<LoginScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        // Logo
-        Image.asset(
-          'assets/logo.png',
-          height: 80.0,
-          width: 180.0,
-          fit: BoxFit.cover,
-          errorBuilder: (context, error, stackTrace) {
-            return const SizedBox(height: 80.0, width: 180.0);
-          },
-        ),
-        const SizedBox(height: 32.0),
-
         // Heading
         Text(
           AppLocalizations.of(context)!.welcomeToPorttivoDriver,

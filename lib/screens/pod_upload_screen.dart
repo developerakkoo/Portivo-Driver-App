@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
 import '../core/theme/app_colors.dart';
 import '../core/localization/app_localizations.dart';
+import '../core/utils/image_utils.dart';
 import '../providers/trip_provider.dart';
 
 class PODUploadScreen extends StatefulWidget {
@@ -54,9 +56,53 @@ class _PODUploadScreenState extends State<PODUploadScreen> {
       _errorMessage = null;
     });
 
+    // Get GPS for watermark
+    Position? position;
+    try {
+      final enabled = await Geolocator.isLocationServiceEnabled();
+      if (!enabled) {
+        if (mounted) {
+          setState(() {
+            _isUploading = false;
+            _errorMessage = 'Location services disabled. Please enable for POD.';
+          });
+        }
+        return;
+      }
+      position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isUploading = false;
+          _errorMessage = 'Failed to get location: $e';
+        });
+      }
+      return;
+    }
+
+    String photoPathToUpload = _photo!.path;
+    try {
+      photoPathToUpload = await ImageUtils.addWatermark(
+          photoPathToUpload,
+          timestamp: DateTime.now(),
+          latitude: position.latitude,
+          longitude: position.longitude,
+        );
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isUploading = false;
+          _errorMessage = 'Failed to add watermark: $e';
+        });
+      }
+      return;
+    }
+
     final tripProvider = Provider.of<TripProvider>(context, listen: false);
 
-    final success = await tripProvider.uploadPOD(widget.tripId, _photo!.path);
+    final success = await tripProvider.uploadPOD(widget.tripId, photoPathToUpload);
 
     if (!mounted) return;
 

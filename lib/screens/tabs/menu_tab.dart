@@ -32,7 +32,7 @@ class MenuTab extends StatelessWidget {
             ),
             _buildMenuItem(
               context: context,
-              icon: Icons.local_shipping_outlined,
+              icon: Icons.inventory_2_outlined,
               title: AppLocalizations.of(context)!.trips,
               onTap: () {
                 // Navigate to main scaffold with trips tab

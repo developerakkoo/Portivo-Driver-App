@@ -4,7 +4,9 @@ import '../../core/theme/app_colors.dart';
 import '../../core/localization/app_localizations.dart';
 import '../../providers/trip_provider.dart';
 import '../../providers/driver_provider.dart';
+import '../../providers/auth_provider.dart';
 import '../../models/trip_model.dart';
+import '../../widgets/notification_app_bar_action.dart';
 
 class HomeTab extends StatefulWidget {
   const HomeTab({super.key});
@@ -42,6 +44,7 @@ class _HomeTabState extends State<HomeTab> {
       backgroundColor: AppColors.background,
       appBar: AppBar(
         title: const Text('Porttivo Driver'),
+        actions: const [NotificationAppBarAction()],
       ),
       body: SafeArea(
         child: RefreshIndicator(
@@ -61,14 +64,17 @@ class _HomeTabState extends State<HomeTab> {
                 ),
                 const SizedBox(height: 32.0),
 
-                // Active Trip Card
-                Consumer<TripProvider>(
-                  builder: (context, tripProvider, _) {
-                    if (tripProvider.activeTrip != null) {
+                // Active Trip Card (only when trip is assigned to this driver)
+                Consumer2<TripProvider, AuthProvider>(
+                  builder: (context, tripProvider, authProvider, _) {
+                    final forDriver = tripProvider.activeTripForDriver(
+                      authProvider.user?.id,
+                    );
+                    if (forDriver != null) {
                       return Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          _buildActiveTripCard(context, tripProvider.activeTrip!),
+                          _buildActiveTripCard(context, forDriver),
                           const SizedBox(height: 24.0),
                         ],
                       );
@@ -78,12 +84,15 @@ class _HomeTabState extends State<HomeTab> {
                 ),
 
                 // Quick Stats
-                Consumer2<TripProvider, DriverProvider>(
-                  builder: (context, tripProvider, driverProvider, _) {
+                Consumer3<TripProvider, DriverProvider, AuthProvider>(
+                  builder: (context, tripProvider, driverProvider, authProvider, _) {
+                    final forDriver = tripProvider.activeTripForDriver(
+                      authProvider.user?.id,
+                    );
                     return _buildQuickStats(
                       context,
                       textTheme,
-                      tripProvider.activeTrip != null ? 1 : 0,
+                      forDriver != null ? 1 : 0,
                       tripProvider.tripHistory.length,
                       driverProvider.driver?.walletBalance ?? 0.0,
                     );
@@ -180,7 +189,7 @@ class _HomeTabState extends State<HomeTab> {
           children: [
             Row(
               children: [
-                Icon(Icons.local_shipping, color: AppColors.primary, size: 24.0),
+                Icon(Icons.inventory_2, color: AppColors.primary, size: 24.0),
                 const SizedBox(width: 8.0),
                 Text(
                   AppLocalizations.of(context)!.activeTrip,
@@ -224,6 +233,7 @@ class _HomeTabState extends State<HomeTab> {
 
   Widget _buildQueuedTripCard(BuildContext context, TripModel trip) {
     final textTheme = Theme.of(context).textTheme;
+    final statusLabel = trip.driverAcceptedAt != null ? 'Accepted' : 'Pending';
     return Container(
       padding: const EdgeInsets.all(16.0),
       decoration: BoxDecoration(
@@ -239,13 +249,37 @@ class _HomeTabState extends State<HomeTab> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (trip.containerNumber != null)
-                  Text(
-                    trip.containerNumber!,
-                    style: textTheme.bodyLarge?.copyWith(
-                      color: AppColors.textPrimary,
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        trip.containerNumber ?? trip.tripId,
+                        style: textTheme.bodyLarge?.copyWith(
+                          color: AppColors.textPrimary,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
-                  ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 2.0),
+                      decoration: BoxDecoration(
+                        color: trip.driverAcceptedAt != null
+                            ? AppColors.success.withOpacity(0.2)
+                            : AppColors.textMuted.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(8.0),
+                      ),
+                      child: Text(
+                        statusLabel,
+                        style: textTheme.labelSmall?.copyWith(
+                          color: trip.driverAcceptedAt != null
+                              ? AppColors.success
+                              : AppColors.textSecondary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
                 if (trip.reference != null) ...[
                   const SizedBox(height: 4.0),
                   Text(
@@ -253,6 +287,7 @@ class _HomeTabState extends State<HomeTab> {
                     style: textTheme.bodySmall?.copyWith(
                       color: AppColors.textSecondary,
                     ),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ],
               ],
@@ -269,7 +304,7 @@ class _HomeTabState extends State<HomeTab> {
       children: [
         Expanded(
           child: _buildStatCard(
-            icon: Icons.local_shipping,
+            icon: Icons.inventory_2,
             value: activeTrips.toString(),
             label: localizations.activeTrips,
             textTheme: textTheme,
@@ -334,13 +369,19 @@ class _HomeTabState extends State<HomeTab> {
     );
   }
 
-  void _showStartTripDialog(BuildContext context, dynamic trip) {
+  void _showStartTripDialog(BuildContext context, TripModel trip) {
     final tripProvider = Provider.of<TripProvider>(context, listen: false);
+    final needsAccept = trip.driverAcceptedAt == null;
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Start Trip'),
-        content: Text('Do you want to start trip ${trip.containerNumber ?? trip.tripId}?'),
+        title: Text(needsAccept ? 'Accept Trip' : 'Start Trip'),
+        content: Text(
+          needsAccept
+              ? 'Do you want to accept trip ${trip.containerNumber ?? trip.tripId}? You can start it after accepting.'
+              : 'Do you want to start trip ${trip.containerNumber ?? trip.tripId}?',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
@@ -349,30 +390,58 @@ class _HomeTabState extends State<HomeTab> {
           TextButton(
             onPressed: () async {
               Navigator.of(context).pop();
-              final success = await tripProvider.startTrip(trip.id);
-              if (context.mounted) {
-                if (success) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Trip started successfully!'),
-                      backgroundColor: AppColors.success,
+              if (needsAccept) {
+                final success = await tripProvider.acceptTrip(trip.id);
+                if (context.mounted) {
+                  if (success) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Trip accepted! You can now start it.'),
+                        backgroundColor: AppColors.success,
                     ),
-                  );
-                  Navigator.of(context).pushNamed(
-                    '/active-trip',
-                    arguments: trip.id,
-                  );
-                } else {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(tripProvider.error ?? 'Failed to start trip'),
-                      backgroundColor: AppColors.error,
-                    ),
-                  );
+                    );
+                    // Show dialog again with Start Trip option
+                    final updatedList = tripProvider.queuedTrips
+                        .where((t) => t.id == trip.id)
+                        .toList();
+                    if (updatedList.isNotEmpty) {
+                      _showStartTripDialog(context, updatedList.first);
+                    }
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(tripProvider.error ?? 'Failed to accept trip'),
+                        backgroundColor: AppColors.error,
+                      ),
+                    );
+                  }
+                }
+              } else {
+                final success = await tripProvider.startTrip(trip.id);
+                if (context.mounted) {
+                  if (success) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Trip started successfully!'),
+                        backgroundColor: AppColors.success,
+                      ),
+                    );
+                    Navigator.of(context).pushNamed(
+                      '/active-trip',
+                      arguments: trip.id,
+                    );
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(tripProvider.error ?? 'Failed to start trip'),
+                        backgroundColor: AppColors.error,
+                      ),
+                    );
+                  }
                 }
               }
             },
-            child: const Text('Start'),
+            child: Text(needsAccept ? 'Accept' : 'Start'),
           ),
         ],
       ),

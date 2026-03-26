@@ -1,34 +1,9 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import '../core/theme/app_colors.dart';
 import '../core/localization/app_localizations.dart';
 
-class AccessPendingScreen extends StatefulWidget {
+class AccessPendingScreen extends StatelessWidget {
   const AccessPendingScreen({super.key});
-
-  @override
-  State<AccessPendingScreen> createState() => _AccessPendingScreenState();
-}
-
-class _AccessPendingScreenState extends State<AccessPendingScreen> {
-  Timer? _timer;
-
-  @override
-  void initState() {
-    super.initState();
-    // Navigate to main scaffold after 5 seconds
-    _timer = Timer(const Duration(seconds: 5), () {
-      if (mounted) {
-        Navigator.of(context).pushReplacementNamed('/home');
-      }
-    });
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
 
   void _handleContactTransporter(BuildContext context) {
     // TODO: Implement contact transporter functionality

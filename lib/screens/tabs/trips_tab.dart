@@ -2,10 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/localization/app_localizations.dart';
+import '../../core/utils/helpers.dart';
 import '../../providers/trip_provider.dart';
+import '../../providers/auth_provider.dart';
 import '../../models/trip_model.dart';
 import '../../core/constants/app_constants.dart';
-import 'package:intl/intl.dart';
+import '../../services/socket_service.dart';
+import '../../widgets/notification_app_bar_action.dart';
 
 class TripsTab extends StatefulWidget {
   const TripsTab({super.key});
@@ -14,13 +17,17 @@ class TripsTab extends StatefulWidget {
   State<TripsTab> createState() => _TripsTabState();
 }
 
-class _TripsTabState extends State<TripsTab> with SingleTickerProviderStateMixin {
+class _TripsTabState extends State<TripsTab>
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late TabController _tabController;
+  final TextEditingController _searchController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _tabController = TabController(length: 3, vsync: this);
+    _searchController.addListener(() => setState(() {}));
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadData();
     });
@@ -28,8 +35,30 @@ class _TripsTabState extends State<TripsTab> with SingleTickerProviderStateMixin
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _tabController.dispose();
+    _searchController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _loadData();
+    }
+  }
+
+  List<TripModel> _getFilteredTrips(List<TripModel> trips) {
+    final query = _searchController.text.toLowerCase().trim();
+    if (query.isEmpty) return trips;
+    return trips.where((trip) {
+      final container = (trip.containerNumber ?? '').toLowerCase();
+      final tripId = trip.tripId.toLowerCase();
+      final ref = (trip.reference ?? '').toLowerCase();
+      return container.contains(query) ||
+          tripId.contains(query) ||
+          ref.contains(query);
+    }).toList();
   }
 
   Future<void> _loadData() async {
@@ -48,56 +77,126 @@ class _TripsTabState extends State<TripsTab> with SingleTickerProviderStateMixin
       backgroundColor: AppColors.background,
       appBar: AppBar(
         title: Text(AppLocalizations.of(context)!.trips),
-        bottom: TabBar(
-          controller: _tabController,
-          tabs: [
-            Tab(text: AppLocalizations.of(context)!.active),
-            Tab(text: AppLocalizations.of(context)!.queued),
-            Tab(text: AppLocalizations.of(context)!.history),
-          ],
+        actions: [
+          const NotificationAppBarAction(),
+          Consumer<TripProvider>(
+            builder: (context, tripProvider, _) {
+              final socketService = SocketService();
+              final state = socketService.connectionState;
+              Color color;
+              String tooltip;
+              switch (state) {
+                case SocketConnectionState.connected:
+                  color = AppColors.success;
+                  tooltip = 'Connected';
+                  break;
+                case SocketConnectionState.connecting:
+                  color = AppColors.warning;
+                  tooltip = 'Connecting...';
+                  break;
+                case SocketConnectionState.error:
+                  color = AppColors.error;
+                  tooltip = 'Connection error';
+                  break;
+                default:
+                  color = AppColors.textMuted;
+                  tooltip = 'Disconnected';
+              }
+              return Tooltip(
+                message: tooltip,
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 16.0),
+                  child: Icon(
+                    Icons.circle,
+                    size: 10.0,
+                    color: color,
+                  ),
+                ),
+              );
+            },
+          ),
+        ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(100),
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                child: TextField(
+                  controller: _searchController,
+                  decoration: InputDecoration(
+                    hintText: 'Search by container, trip ID, reference',
+                    prefixIcon: const Icon(Icons.search),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                  ),
+                  onChanged: (_) => setState(() {}),
+                ),
+              ),
+              TabBar(
+                controller: _tabController,
+                tabs: [
+                  Tab(text: AppLocalizations.of(context)!.active),
+                  Tab(text: AppLocalizations.of(context)!.queued),
+                  Tab(text: AppLocalizations.of(context)!.history),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
-      body: RefreshIndicator(
-        onRefresh: _loadData,
-        child: TabBarView(
-          controller: _tabController,
-          children: [
-            _buildActiveTab(),
-            _buildQueuedTab(),
-            _buildHistoryTab(),
-          ],
-        ),
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          _buildActiveTab(),
+          _buildQueuedTab(),
+          _buildHistoryTab(),
+        ],
       ),
     );
   }
 
   Widget _buildActiveTab() {
-    return Consumer<TripProvider>(
-      builder: (context, tripProvider, _) {
-        if (tripProvider.isLoading && tripProvider.activeTrip == null) {
-          return const Center(child: CircularProgressIndicator());
-        }
+    return Consumer2<TripProvider, AuthProvider>(
+      builder: (context, tripProvider, authProvider, _) {
+        final currentDriverId = authProvider.user?.id;
+        final activeTrip = tripProvider.activeTripForDriver(currentDriverId);
+        final filteredActiveTrip = activeTrip == null
+            ? null
+            : (_getFilteredTrips([activeTrip]).isEmpty ? null : activeTrip);
 
-        if (tripProvider.activeTrip == null) {
-          return Center(
+        Widget content;
+        if (tripProvider.isLoading && activeTrip == null) {
+          content = const Center(child: CircularProgressIndicator());
+        } else if (filteredActiveTrip == null) {
+          content = Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Icon(
-                  Icons.local_shipping_outlined,
+                  Icons.inventory_2_outlined,
                   size: 64.0,
                   color: AppColors.textMuted,
                 ),
                 const SizedBox(height: 16.0),
                 Text(
-                  AppLocalizations.of(context)!.noActiveTrip,
+                  _searchController.text.trim().isEmpty
+                      ? AppLocalizations.of(context)!.noActiveTrip
+                      : 'No trips match your search',
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                         color: AppColors.textPrimary,
                       ),
                 ),
                 const SizedBox(height: 8.0),
                 Text(
-                  AppLocalizations.of(context)!.activeTripsWillAppearHere,
+                  _searchController.text.trim().isEmpty
+                      ? AppLocalizations.of(context)!.activeTripsWillAppearHere
+                      : 'Try a different search term',
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                         color: AppColors.textSecondary,
                       ),
@@ -105,26 +204,48 @@ class _TripsTabState extends State<TripsTab> with SingleTickerProviderStateMixin
               ],
             ),
           );
+        } else {
+          content = Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: _buildTripCard(context, filteredActiveTrip),
+          );
         }
 
-        return SingleChildScrollView(
-          physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.all(16.0),
-          child: _buildTripCard(context, tripProvider.activeTrip!),
+        return RefreshIndicator(
+          onRefresh: _loadData,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              return SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                  child: content,
+                ),
+              );
+            },
+          ),
         );
       },
     );
   }
 
   Widget _buildQueuedTab() {
-    return Consumer<TripProvider>(
-      builder: (context, tripProvider, _) {
-        if (tripProvider.isLoading && tripProvider.queuedTrips.isEmpty) {
-          return const Center(child: CircularProgressIndicator());
-        }
+    return Consumer2<TripProvider, AuthProvider>(
+      builder: (context, tripProvider, authProvider, _) {
+        final currentDriverId = authProvider.user?.id;
+        final queuedForDriver = currentDriverId != null
+            ? tripProvider.queuedTrips
+                .where((t) => t.driverId == currentDriverId)
+                .toList()
+            : tripProvider.queuedTrips;
+        final filteredQueued = _getFilteredTrips(queuedForDriver);
 
-        if (tripProvider.queuedTrips.isEmpty) {
-          return Center(
+        Widget content;
+        if (tripProvider.isLoading && filteredQueued.isEmpty) {
+          content = const Center(child: CircularProgressIndicator());
+        } else if (filteredQueued.isEmpty) {
+          final hasSearch = _searchController.text.trim().isNotEmpty;
+          content = Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -135,14 +256,14 @@ class _TripsTabState extends State<TripsTab> with SingleTickerProviderStateMixin
                 ),
                 const SizedBox(height: 16.0),
                 Text(
-                  AppLocalizations.of(context)!.noQueuedTrips,
+                  hasSearch ? 'No trips match your search' : AppLocalizations.of(context)!.noQueuedTrips,
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                         color: AppColors.textPrimary,
                       ),
                 ),
                 const SizedBox(height: 8.0),
                 Text(
-                  AppLocalizations.of(context)!.queuedTripsWillAppearHere,
+                  hasSearch ? 'Try a different search term' : AppLocalizations.of(context)!.queuedTripsWillAppearHere,
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                         color: AppColors.textSecondary,
                       ),
@@ -150,33 +271,58 @@ class _TripsTabState extends State<TripsTab> with SingleTickerProviderStateMixin
               ],
             ),
           );
+        } else {
+          content = ListView.builder(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.all(16.0),
+            itemCount: filteredQueued.length,
+            itemBuilder: (context, index) {
+              final trip = filteredQueued[index];
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 12.0),
+                child: _buildTripCard(context, trip),
+              );
+            },
+          );
         }
 
-        return ListView.builder(
-          physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.all(16.0),
-          itemCount: tripProvider.queuedTrips.length,
-          itemBuilder: (context, index) {
-            final trip = tripProvider.queuedTrips[index];
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 12.0),
-              child: _buildTripCard(context, trip),
-            );
-          },
+        return RefreshIndicator(
+          onRefresh: _loadData,
+          child: filteredQueued.isEmpty
+              ? LayoutBuilder(
+                  builder: (context, constraints) {
+                    return SingleChildScrollView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                        child: content,
+                      ),
+                    );
+                  },
+                )
+              : content,
         );
       },
     );
   }
 
   Widget _buildHistoryTab() {
-    return Consumer<TripProvider>(
-      builder: (context, tripProvider, _) {
-        if (tripProvider.isLoading && tripProvider.tripHistory.isEmpty) {
-          return const Center(child: CircularProgressIndicator());
-        }
+    return Consumer2<TripProvider, AuthProvider>(
+      builder: (context, tripProvider, authProvider, _) {
+        final currentDriverId = authProvider.user?.id;
+        final historyForDriver = currentDriverId != null
+            ? tripProvider.tripHistory
+                .where((t) => t.driverId == currentDriverId)
+                .toList()
+            : tripProvider.tripHistory;
+        final filteredHistory = _getFilteredTrips(historyForDriver);
 
-        if (tripProvider.tripHistory.isEmpty) {
-          return Center(
+        Widget content;
+        if (tripProvider.isLoading && filteredHistory.isEmpty) {
+          content = const Center(child: CircularProgressIndicator());
+        } else if (filteredHistory.isEmpty) {
+          final hasSearch = _searchController.text.trim().isNotEmpty;
+          content = Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -187,14 +333,14 @@ class _TripsTabState extends State<TripsTab> with SingleTickerProviderStateMixin
                 ),
                 const SizedBox(height: 16.0),
                 Text(
-                  AppLocalizations.of(context)!.noTripHistory,
+                  hasSearch ? 'No trips match your search' : AppLocalizations.of(context)!.noTripHistory,
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                         color: AppColors.textPrimary,
                       ),
                 ),
                 const SizedBox(height: 8.0),
                 Text(
-                  AppLocalizations.of(context)!.completedTripsWillAppearHere,
+                  hasSearch ? 'Try a different search term' : AppLocalizations.of(context)!.completedTripsWillAppearHere,
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                         color: AppColors.textSecondary,
                       ),
@@ -202,19 +348,36 @@ class _TripsTabState extends State<TripsTab> with SingleTickerProviderStateMixin
               ],
             ),
           );
+        } else {
+          content = ListView.builder(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.all(16.0),
+            itemCount: filteredHistory.length,
+            itemBuilder: (context, index) {
+              final trip = filteredHistory[index];
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 12.0),
+                child: _buildTripCard(context, trip),
+              );
+            },
+          );
         }
 
-        return ListView.builder(
-          physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.all(16.0),
-          itemCount: tripProvider.tripHistory.length,
-          itemBuilder: (context, index) {
-            final trip = tripProvider.tripHistory[index];
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 12.0),
-              child: _buildTripCard(context, trip),
-            );
-          },
+        return RefreshIndicator(
+          onRefresh: _loadData,
+          child: filteredHistory.isEmpty
+              ? LayoutBuilder(
+                  builder: (context, constraints) {
+                    return SingleChildScrollView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                        child: content,
+                      ),
+                    );
+                  },
+                )
+              : content,
         );
       },
     );
@@ -222,7 +385,6 @@ class _TripsTabState extends State<TripsTab> with SingleTickerProviderStateMixin
 
   Widget _buildTripCard(BuildContext context, TripModel trip) {
     final textTheme = Theme.of(context).textTheme;
-    final dateFormat = DateFormat('MMM dd, yyyy');
 
     return InkWell(
       onTap: () {
@@ -232,8 +394,18 @@ class _TripsTabState extends State<TripsTab> with SingleTickerProviderStateMixin
             arguments: trip.id,
           );
         } else if (trip.status == AppConstants.tripStatusPlanned) {
-          // Show start trip dialog
           _showStartTripDialog(context, trip);
+        } else if (trip.status == AppConstants.tripStatusPodPending) {
+          Navigator.of(context).pushNamed(
+            '/active-trip',
+            arguments: trip.id,
+          );
+        } else if (trip.status == AppConstants.tripStatusCompleted ||
+            trip.status == AppConstants.tripStatusCancelled) {
+          Navigator.of(context).pushNamed(
+            '/trip-detail',
+            arguments: trip.id,
+          );
         }
       },
       child: Container(
@@ -261,11 +433,20 @@ class _TripsTabState extends State<TripsTab> with SingleTickerProviderStateMixin
                             color: AppColors.textPrimary,
                           ),
                         ),
+                      if (trip.tripId.isNotEmpty) ...[
+                        const SizedBox(height: 4.0),
+                        Text(
+                          trip.tripId,
+                          style: textTheme.bodySmall?.copyWith(
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                      ],
                       if (trip.reference != null) ...[
                         const SizedBox(height: 4.0),
                         Text(
                           trip.reference!,
-                          style: textTheme.bodyMedium?.copyWith(
+                          style: textTheme.bodySmall?.copyWith(
                             color: AppColors.textSecondary,
                           ),
                         ),
@@ -276,27 +457,71 @@ class _TripsTabState extends State<TripsTab> with SingleTickerProviderStateMixin
                 _buildStatusChip(trip.status),
               ],
             ),
+            const SizedBox(height: 16.0),
+            _buildTripInfoRow(
+              icon: Icons.inventory_2_outlined,
+              label: 'Type',
+              value: Helpers.getTripTypeLabel(trip.tripType),
+              textTheme: textTheme,
+            ),
             const SizedBox(height: 12.0),
-            Row(
-              children: [
-                Icon(Icons.local_shipping, size: 16.0, color: AppColors.textSecondary),
-                const SizedBox(width: 4.0),
-                Text(
-                  trip.tripType,
-                  style: textTheme.bodySmall?.copyWith(
-                    color: AppColors.textSecondary,
+            if (trip.pickupLocation != null || trip.dropLocation != null)
+              Row(
+                children: [
+                  if (trip.pickupLocation != null)
+                    Expanded(
+                      child: _buildTripInfoRow(
+                        icon: Icons.location_on_outlined,
+                        label: 'Origin',
+                        value: trip.pickupLocation!.address ?? 'Location',
+                        textTheme: textTheme,
+                      ),
+                    ),
+                  if (trip.pickupLocation != null && trip.dropLocation != null) ...[
+                    const SizedBox(width: 16.0),
+                    Icon(
+                      Icons.arrow_forward,
+                      color: AppColors.textSecondary,
+                      size: 20.0,
+                    ),
+                    const SizedBox(width: 16.0),
+                  ],
+                  if (trip.dropLocation != null)
+                    Expanded(
+                      child: _buildTripInfoRow(
+                        icon: Icons.location_on,
+                        label: 'Destination',
+                        value: trip.dropLocation!.address ?? 'Location',
+                        textTheme: textTheme,
+                      ),
+                    ),
+                ],
+              ),
+            if (trip.pickupLocation != null || trip.dropLocation != null)
+              const SizedBox(height: 12.0),
+            Container(
+              padding: const EdgeInsets.all(12.0),
+              decoration: BoxDecoration(
+                color: AppColors.background,
+                borderRadius: BorderRadius.circular(12.0),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.calendar_today_outlined,
+                    color: AppColors.primary,
+                    size: 20.0,
                   ),
-                ),
-                const SizedBox(width: 16.0),
-                Icon(Icons.calendar_today, size: 16.0, color: AppColors.textSecondary),
-                const SizedBox(width: 4.0),
-                Text(
-                  dateFormat.format(trip.createdAt),
-                  style: textTheme.bodySmall?.copyWith(
-                    color: AppColors.textSecondary,
+                  const SizedBox(width: 8.0),
+                  Text(
+                    'Created: ${Helpers.formatDateTime(trip.createdAt)}',
+                    style: textTheme.bodyMedium?.copyWith(
+                      color: AppColors.textPrimary,
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
             if (trip.milestones.isNotEmpty) ...[
               const SizedBox(height: 12.0),
@@ -319,6 +544,41 @@ class _TripsTabState extends State<TripsTab> with SingleTickerProviderStateMixin
     );
   }
 
+  Widget _buildTripInfoRow({
+    required IconData icon,
+    required String label,
+    required String value,
+    required TextTheme textTheme,
+  }) {
+    return Row(
+      children: [
+        Icon(icon, size: 18.0, color: AppColors.textSecondary),
+        const SizedBox(width: 8.0),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: textTheme.bodySmall?.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+              ),
+              const SizedBox(height: 2.0),
+              Text(
+                value,
+                style: textTheme.bodyMedium?.copyWith(
+                  color: AppColors.textPrimary,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildStatusChip(String status) {
     Color color;
     switch (status) {
@@ -334,6 +594,9 @@ class _TripsTabState extends State<TripsTab> with SingleTickerProviderStateMixin
       case AppConstants.tripStatusPlanned:
         color = AppColors.textSecondary;
         break;
+      case AppConstants.tripStatusCancelled:
+        color = AppColors.error;
+        break;
       default:
         color = AppColors.textMuted;
     }
@@ -346,7 +609,7 @@ class _TripsTabState extends State<TripsTab> with SingleTickerProviderStateMixin
         border: Border.all(color: color.withOpacity(0.3)),
       ),
       child: Text(
-        status.replaceAll('_', ' '),
+        Helpers.getStatusLabel(status),
         style: TextStyle(
           color: color,
           fontSize: 12.0,
@@ -358,11 +621,17 @@ class _TripsTabState extends State<TripsTab> with SingleTickerProviderStateMixin
 
   void _showStartTripDialog(BuildContext context, TripModel trip) {
     final tripProvider = Provider.of<TripProvider>(context, listen: false);
+    final needsAccept = trip.driverAcceptedAt == null;
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Start Trip'),
-        content: Text('Do you want to start trip ${trip.containerNumber ?? trip.tripId}?'),
+        title: Text(needsAccept ? 'Accept Trip' : 'Start Trip'),
+        content: Text(
+          needsAccept
+              ? 'Do you want to accept trip ${trip.containerNumber ?? trip.tripId}? You can start it after accepting.'
+              : 'Do you want to start trip ${trip.containerNumber ?? trip.tripId}?',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
@@ -371,30 +640,57 @@ class _TripsTabState extends State<TripsTab> with SingleTickerProviderStateMixin
           TextButton(
             onPressed: () async {
               Navigator.of(context).pop();
-              final success = await tripProvider.startTrip(trip.id);
-              if (context.mounted) {
-                if (success) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Trip started successfully!'),
-                      backgroundColor: AppColors.success,
-                    ),
-                  );
-                  Navigator.of(context).pushNamed(
-                    '/active-trip',
-                    arguments: trip.id,
-                  );
-                } else {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(tripProvider.error ?? 'Failed to start trip'),
-                      backgroundColor: AppColors.error,
-                    ),
-                  );
+              if (needsAccept) {
+                final success = await tripProvider.acceptTrip(trip.id);
+                if (context.mounted) {
+                  if (success) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Trip accepted! You can now start it.'),
+                        backgroundColor: AppColors.success,
+                      ),
+                    );
+                    final updatedList = tripProvider.queuedTrips
+                        .where((t) => t.id == trip.id)
+                        .toList();
+                    if (updatedList.isNotEmpty) {
+                      _showStartTripDialog(context, updatedList.first);
+                    }
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(tripProvider.error ?? 'Failed to accept trip'),
+                        backgroundColor: AppColors.error,
+                      ),
+                    );
+                  }
+                }
+              } else {
+                final success = await tripProvider.startTrip(trip.id);
+                if (context.mounted) {
+                  if (success) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Trip started successfully!'),
+                        backgroundColor: AppColors.success,
+                      ),
+                    );
+                    Navigator.of(context).pushNamed(
+                      '/active-trip',
+                      arguments: trip.id,
+                    );
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(tripProvider.error ?? 'Failed to start trip'),
+                        backgroundColor: AppColors.error,
+                      ),
+                    );
+                  }
                 }
               }
             },
-            child: const Text('Start'),
+            child: Text(needsAccept ? 'Accept' : 'Start'),
           ),
         ],
       ),

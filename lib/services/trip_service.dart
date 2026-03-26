@@ -20,24 +20,25 @@ class TripService {
 
       if (response.data['success'] == true) {
         final data = response.data['data'];
-        if (data != null && data['trip'] != null) {
-          // Handle null trip (no active trip)
-          if (data['trip'] == null) {
+        if (data == null) return null;
+
+        if (data is Map) {
+          final map = data is Map<String, dynamic>
+              ? data
+              : Map<String, dynamic>.from(data);
+          if (map.containsKey('trip')) {
+            final tripRaw = map['trip'];
+            if (tripRaw == null) return null;
+            if (tripRaw is Map<String, dynamic>) {
+              return TripModel.fromJson(tripRaw);
+            }
+            if (tripRaw is Map) {
+              return TripModel.fromJson(Map<String, dynamic>.from(tripRaw));
+            }
             return null;
           }
-          final tripData = data['trip'];
-          if (tripData is Map<String, dynamic>) {
-            return TripModel.fromJson(tripData);
-          } else if (tripData is Map) {
-            return TripModel.fromJson(Map<String, dynamic>.from(tripData));
-          }
-        }
-        // Fallback
-        if (data != null && data is Map) {
-          if (data is Map<String, dynamic>) {
-            return TripModel.fromJson(data);
-          } else {
-            return TripModel.fromJson(Map<String, dynamic>.from(data));
+          if (map['_id'] != null || map['id'] != null) {
+            return TripModel.fromJson(map);
           }
         }
       }
@@ -190,6 +191,37 @@ class TripService {
     }
   }
 
+  Future<TripModel?> acceptTrip(String id) async {
+    try {
+      if (kDebugMode) {
+        print('TripService: Accepting trip: $id');
+      }
+
+      final response = await _api.put(ApiConfig.tripAcceptDriver(id));
+
+      if (response.data['success'] == true) {
+        final data = response.data['data'];
+        if (data != null && data is Map) {
+          if (data is Map<String, dynamic>) {
+            return TripModel.fromJson(data);
+          } else {
+            return TripModel.fromJson(Map<String, dynamic>.from(data));
+          }
+        }
+      }
+      return null;
+    } on DioException catch (e) {
+      ErrorHandler.logError(e, context: 'TripService: Error accepting trip');
+      rethrow;
+    } catch (e, stackTrace) {
+      ErrorHandler.logError(e, context: 'TripService: Error accepting trip');
+      if (kDebugMode) {
+        print('Stack: $stackTrace');
+      }
+      rethrow;
+    }
+  }
+
   Future<TripModel?> startTrip(String id) async {
     try {
       if (kDebugMode) {
@@ -274,6 +306,7 @@ class TripService {
     required double latitude,
     required double longitude,
     String? photoPath,
+    List<String>? photoPaths,
     String? address,
   }) async {
     try {
@@ -295,30 +328,36 @@ class TripService {
         throw Exception('Invalid longitude value');
       }
       
-      if (photoPath != null) {
-        // Compress image before upload
-        String finalPhotoPath = photoPath;
-        try {
-          if (await ImageUtils.needsCompression(photoPath)) {
-            if (kDebugMode) {
-              print('TripService: Compressing image before upload');
+      final paths = photoPaths ?? (photoPath != null ? [photoPath] : null);
+      
+      if (paths != null && paths.isNotEmpty) {
+        final files = <MultipartFile>[];
+        for (final p in paths) {
+          String finalPath = p;
+          try {
+            if (await ImageUtils.needsCompression(p)) {
+              if (kDebugMode) {
+                print('TripService: Compressing image before upload');
+              }
+              finalPath = await ImageUtils.compressImage(p);
             }
-            finalPhotoPath = await ImageUtils.compressImage(photoPath);
+          } catch (e) {
+            if (kDebugMode) {
+              print('TripService: Error compressing image, using original: $e');
+            }
           }
-        } catch (e) {
-          if (kDebugMode) {
-            print('TripService: Error compressing image, using original: $e');
-          }
-          // Continue with original image if compression fails
+          files.add(await MultipartFile.fromFile(finalPath));
         }
 
-        // Upload with photo (multipart)
-        final formData = FormData.fromMap({
-          'latitude': latitude,
-          'longitude': longitude,
-          if (address != null) 'address': address,
-          'photo': await MultipartFile.fromFile(finalPhotoPath),
-        });
+        final formData = FormData();
+        formData.fields.addAll([
+          MapEntry('latitude', latitude.toString()),
+          MapEntry('longitude', longitude.toString()),
+          if (address != null) MapEntry('address', address),
+        ]);
+        for (final f in files) {
+          formData.files.add(MapEntry('photos', f));
+        }
 
         final response = await _api.postMultipart(
           ApiConfig.tripMilestone(tripId, milestoneNumber),
@@ -420,6 +459,40 @@ class TripService {
     }
   }
 
+  Future<TripModel?> updateTrip(String id, Map<String, dynamic> tripData) async {
+    try {
+      if (kDebugMode) {
+        print('TripService: Updating trip: $id');
+      }
+
+      final response = await _api.put(
+        ApiConfig.tripUpdate(id),
+        data: tripData,
+      );
+
+      if (response.data['success'] == true) {
+        final data = response.data['data'];
+        if (data != null && data is Map) {
+          if (data is Map<String, dynamic>) {
+            return TripModel.fromJson(data);
+          } else {
+            return TripModel.fromJson(Map<String, dynamic>.from(data));
+          }
+        }
+      }
+      return null;
+    } on DioException catch (e) {
+      ErrorHandler.logError(e, context: 'TripService: Error updating trip');
+      rethrow;
+    } catch (e, stackTrace) {
+      ErrorHandler.logError(e, context: 'TripService: Error updating trip');
+      if (kDebugMode) {
+        print('Stack: $stackTrace');
+      }
+      rethrow;
+    }
+  }
+
   Future<TripModel?> uploadPOD(String tripId, String photoPath) async {
     try {
       if (kDebugMode) {
@@ -451,7 +524,7 @@ class TripService {
       }
       
       final formData = FormData.fromMap({
-        'photo': await MultipartFile.fromFile(finalPhotoPath),
+        'pod': await MultipartFile.fromFile(finalPhotoPath),
       });
 
       final response = await _api.postMultipart(

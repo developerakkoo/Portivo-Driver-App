@@ -31,9 +31,15 @@ class SocketService {
   Function(Map<String, dynamic>)? onTripStarted;
   Function(Map<String, dynamic>)? onTripMilestoneUpdated;
   Function(Map<String, dynamic>)? onTripCompleted;
+  Function(Map<String, dynamic>)? onTripPodPending;
+  Function(Map<String, dynamic>)? onTripPodUploaded;
   Function(Map<String, dynamic>)? onTripAutoActivated;
   Function(Map<String, dynamic>)? onPODApproved;
   Function(Map<String, dynamic>)? onTripCancelled;
+  Function(Map<String, dynamic>)? onTripCustomerAssigned;
+  Function(Map<String, dynamic>)? onTripDriverAssigned;
+  Function(Map<String, dynamic>)? onTripVehicleAssigned;
+  Function(Map<String, dynamic>)? onTripClosedWithoutPOD;
   Function(SocketConnectionState)? onConnectionStateChanged;
   Function(String)? onError;
 
@@ -192,6 +198,20 @@ class SocketService {
       onTripCompleted?.call(data is Map ? Map<String, dynamic>.from(data) : {});
     });
 
+    _socket!.on('trip:pod:pending', (data) {
+      if (kDebugMode) {
+        print('SocketService: trip:pod:pending - $data');
+      }
+      onTripPodPending?.call(data is Map ? Map<String, dynamic>.from(data) : {});
+    });
+
+    _socket!.on('trip:pod:uploaded', (data) {
+      if (kDebugMode) {
+        print('SocketService: trip:pod:uploaded - $data');
+      }
+      onTripPodUploaded?.call(data is Map ? Map<String, dynamic>.from(data) : {});
+    });
+
     _socket!.on('trip:auto-activated', (data) {
       if (kDebugMode) {
         print('SocketService: trip:auto-activated - $data');
@@ -199,7 +219,13 @@ class SocketService {
       onTripAutoActivated?.call(data is Map ? Map<String, dynamic>.from(data) : {});
     });
 
-    // POD events
+    // POD events - backend emits trip:closed:with-pod when transporter approves POD
+    _socket!.on('trip:closed:with-pod', (data) {
+      if (kDebugMode) {
+        print('SocketService: trip:closed:with-pod - $data');
+      }
+      onPODApproved?.call(data is Map ? Map<String, dynamic>.from(data) : {});
+    });
     _socket!.on('pod:approved', (data) {
       if (kDebugMode) {
         print('SocketService: pod:approved - $data');
@@ -213,6 +239,35 @@ class SocketService {
         print('SocketService: trip:cancelled - $data');
       }
       onTripCancelled?.call(data is Map ? Map<String, dynamic>.from(data) : {});
+    });
+
+    // Trip assignment events (driver assigned to trip)
+    _socket!.on('trip:customer:assigned', (data) {
+      if (kDebugMode) {
+        print('SocketService: trip:customer:assigned - $data');
+      }
+      onTripCustomerAssigned?.call(data is Map ? Map<String, dynamic>.from(data) : {});
+    });
+
+    _socket!.on('trip:driver:assigned', (data) {
+      if (kDebugMode) {
+        print('SocketService: trip:driver:assigned - $data');
+      }
+      onTripDriverAssigned?.call(data is Map ? Map<String, dynamic>.from(data) : {});
+    });
+
+    _socket!.on('trip:vehicle:assigned', (data) {
+      if (kDebugMode) {
+        print('SocketService: trip:vehicle:assigned - $data');
+      }
+      onTripVehicleAssigned?.call(data is Map ? Map<String, dynamic>.from(data) : {});
+    });
+
+    _socket!.on('trip:closed:without-pod', (data) {
+      if (kDebugMode) {
+        print('SocketService: trip:closed:without-pod - $data');
+      }
+      onTripClosedWithoutPOD?.call(data is Map ? Map<String, dynamic>.from(data) : {});
     });
 
     // Error event from server
@@ -315,6 +370,28 @@ class SocketService {
     }
   }
 
+  /// Emit driver location update (for real-time tracking during active trip)
+  void emitDriverLocationUpdate({
+    required String tripId,
+    required double latitude,
+    required double longitude,
+  }) {
+    if (_socket != null && _connectionState == SocketConnectionState.connected) {
+      _socket!.emit('driver:location:update', {
+        'tripId': tripId,
+        'latitude': latitude,
+        'longitude': longitude,
+      });
+      if (kDebugMode) {
+        print('SocketService: Emitted driver:location:update for trip: $tripId');
+      }
+    } else {
+      if (kDebugMode) {
+        print('SocketService: Cannot emit driver location - not connected');
+      }
+    }
+  }
+
   /// Emit milestone update event
   void emitMilestoneUpdate({
     required String tripId,
@@ -362,12 +439,15 @@ class SocketService {
     _reconnectTimer = null;
     _stopHeartbeat();
     _reconnectAttempts = 0;
-    
+    _driverId = null;
+    _vehicleId = null;
+    _tripId = null;
+
     _socket?.disconnect();
     _socket?.dispose();
     _socket = null;
     _setConnectionState(SocketConnectionState.disconnected);
-    
+
     if (kDebugMode) {
       print('SocketService: Disconnected');
     }
