@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:dio/dio.dart';
 import '../models/trip_model.dart';
 import '../core/utils/error_handler.dart';
 import '../services/trip_service.dart';
 import '../services/socket_service.dart';
+import '../services/active_trip_live_location_service.dart';
 
 class TripProvider with ChangeNotifier {
   final TripService _tripService = TripService();
@@ -38,6 +41,20 @@ class TripProvider with ChangeNotifier {
   bool get isLoading => _isLoading;
   String? get error => _error;
 
+  /// Queued trips that should show a short green border highlight (new assignment).
+  final Set<String> _highlightQueuedTripIds = <String>{};
+  bool isQueuedTripHighlighted(String tripId) =>
+      _highlightQueuedTripIds.contains(tripId);
+
+  void _flashHighlightQueuedTrip(String tripId) {
+    _highlightQueuedTripIds.add(tripId);
+    notifyListeners();
+    Future<void>.delayed(const Duration(seconds: 3), () {
+      _highlightQueuedTripIds.remove(tripId);
+      notifyListeners();
+    });
+  }
+
   TripProvider({this.onTripDriverAssigned}) {
     _setupSocketListeners();
     _setupSocketConnectionListener();
@@ -57,12 +74,38 @@ class TripProvider with ChangeNotifier {
             _socketService.joinVehicleRoom(activeTrip.vehicleId);
           }
         }
+        loadActiveTrip(refresh: true);
+        loadQueuedTrips(refresh: true);
       }
       notifyListeners();
     };
   }
 
   void _setupSocketListeners() {
+    _socketService.onTripUpdated = (data) {
+      if (kDebugMode) {
+        print('TripProvider: Socket event - trip:updated');
+      }
+      if (data['trip'] == null) return;
+      final trip = TripModel.fromJson(data['trip']);
+      if (_activeTrip?.id == trip.id) {
+        _activeTrip = trip;
+      }
+      _syncLiveLocationTracking();
+      final qi = _queuedTrips.indexWhere((t) => t.id == trip.id);
+      if (qi != -1) {
+        _queuedTrips[qi] = trip;
+      }
+      final hi = _tripHistory.indexWhere((t) => t.id == trip.id);
+      if (hi != -1) {
+        _tripHistory[hi] = trip;
+      }
+      if (_selectedTrip?.id == trip.id) {
+        _selectedTrip = trip;
+      }
+      notifyListeners();
+    };
+
     _socketService.onTripStarted = (data) {
       if (kDebugMode) {
         print('TripProvider: Socket event - trip:started');
@@ -78,6 +121,7 @@ class TripProvider with ChangeNotifier {
         }
         // Join trip and vehicle rooms for real-time updates
         _joinTripRooms(trip);
+        _syncLiveLocationTracking();
         notifyListeners();
       }
     };
@@ -101,6 +145,7 @@ class TripProvider with ChangeNotifier {
         if (historyIndex != -1) {
           _tripHistory[historyIndex] = trip;
         }
+        _syncLiveLocationTracking();
         notifyListeners();
       }
     };
@@ -126,6 +171,7 @@ class TripProvider with ChangeNotifier {
         } else {
           _tripHistory.insert(0, trip);
         }
+        _syncLiveLocationTracking();
         notifyListeners();
       }
     };
@@ -151,6 +197,7 @@ class TripProvider with ChangeNotifier {
         } else {
           _tripHistory.insert(0, trip);
         }
+        _syncLiveLocationTracking();
         notifyListeners();
       }
     };
@@ -191,6 +238,7 @@ class TripProvider with ChangeNotifier {
         }
         // Join trip and vehicle rooms for real-time updates
         _joinTripRooms(trip);
+        _syncLiveLocationTracking();
         notifyListeners();
       }
     };
@@ -230,6 +278,7 @@ class TripProvider with ChangeNotifier {
         }
         // Remove from queued trips
         _queuedTrips.removeWhere((t) => t.id == trip.id);
+        _syncLiveLocationTracking();
         notifyListeners();
       }
     };
@@ -252,6 +301,7 @@ class TripProvider with ChangeNotifier {
       if (data['trip'] != null) {
         final trip = TripModel.fromJson(data['trip']);
         _addToQueuedTrips(trip);
+        _flashHighlightQueuedTrip(trip.id);
         notifyListeners();
         onTripDriverAssigned?.call();
       }
@@ -287,6 +337,7 @@ class TripProvider with ChangeNotifier {
         } else {
           _tripHistory.insert(0, trip);
         }
+        _syncLiveLocationTracking();
         notifyListeners();
       }
     };
@@ -311,6 +362,10 @@ class TripProvider with ChangeNotifier {
     }
   }
 
+  void _syncLiveLocationTracking() {
+    unawaited(ActiveTripLiveLocationService.instance.syncWithActiveTrip(_activeTrip));
+  }
+
   Future<void> loadActiveTrip({bool refresh = false}) async {
     if (!refresh && _activeTrip != null) return;
 
@@ -333,6 +388,7 @@ class TripProvider with ChangeNotifier {
       ErrorHandler.logError(e, context: 'TripProvider: Error loading active trip');
     } finally {
       _isLoading = false;
+      _syncLiveLocationTracking();
       notifyListeners();
     }
   }
@@ -452,6 +508,7 @@ class TripProvider with ChangeNotifier {
         if (queuedIndex != -1) {
           _queuedTrips[queuedIndex] = trip;
         }
+        _syncLiveLocationTracking();
         notifyListeners();
         return true;
       }
@@ -534,6 +591,10 @@ class TripProvider with ChangeNotifier {
         }
         // Join socket rooms for real-time updates
         _joinTripRooms(trip);
+        // Background location is requested from the UI via
+        // BackgroundLocationConsent after a prominent disclosure (store policy);
+        // tracking still works in the foreground until then.
+        _syncLiveLocationTracking();
         notifyListeners();
         return true;
       }
@@ -586,6 +647,7 @@ class TripProvider with ChangeNotifier {
         } else {
           _tripHistory.insert(0, trip);
         }
+        _syncLiveLocationTracking();
         notifyListeners();
         return true;
       }
@@ -648,6 +710,12 @@ class TripProvider with ChangeNotifier {
         if (historyIndex != -1) {
           _tripHistory[historyIndex] = trip;
         }
+        _socketService.emitDriverLocationUpdate(
+          tripId: tripId,
+          latitude: latitude,
+          longitude: longitude,
+        );
+        _syncLiveLocationTracking();
         notifyListeners();
         return true;
       }
@@ -694,6 +762,7 @@ class TripProvider with ChangeNotifier {
         if (_activeTrip?.id == tripId) {
           _activeTrip = trip;
         }
+        _syncLiveLocationTracking();
         notifyListeners();
         return true;
       }
@@ -734,6 +803,7 @@ class TripProvider with ChangeNotifier {
 
   /// Clear all trip data (used on logout)
   void clearAll() {
+    ActiveTripLiveLocationService.instance.stop();
     _activeTrip = null;
     _queuedTrips = [];
     _tripHistory = [];

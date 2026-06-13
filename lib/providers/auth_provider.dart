@@ -5,6 +5,7 @@ import '../models/driver_model.dart';
 import '../core/utils/error_handler.dart';
 import '../services/auth_service.dart';
 import '../services/socket_service.dart';
+import '../services/active_trip_live_location_service.dart';
 
 class AuthProvider with ChangeNotifier {
   final AuthService _authService = AuthService();
@@ -130,6 +131,10 @@ class AuthProvider with ChangeNotifier {
       if (kDebugMode) {
         print('AuthProvider: Logging out');
       }
+      // Tell the server so the transporter sees a logged-out tracking status
+      // immediately, and stop any live location streaming before disconnecting.
+      _socketService.emitDriverSessionLogout();
+      ActiveTripLiveLocationService.instance.stop();
       await _authService.logout();
       _socketService.disconnect();
       _user = null;

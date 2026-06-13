@@ -21,6 +21,7 @@ import 'screens/pod_upload_screen.dart';
 import 'screens/trip_detail_screen.dart';
 import 'screens/notifications_screen.dart';
 import 'services/storage_service.dart';
+import 'services/app_lifecycle_tracker.dart';
 
 /// Custom delegate that uses a specific locale regardless of MaterialApp's locale
 class _AppLocalizationsDelegateWithLocale extends LocalizationsDelegate<AppLocalizations> {
@@ -56,6 +57,12 @@ class MyApp extends StatefulWidget {
 }
 
 class _MyAppState extends State<MyApp> {
+  @override
+  void initState() {
+    super.initState();
+    AppLifecycleTracker.instance.register();
+  }
+
   @override
   Widget build(BuildContext context) {
     return MultiProvider(

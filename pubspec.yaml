@@ -53,6 +53,9 @@ dependencies:
   # Location Services
   geolocator: ^10.1.0
   permission_handler: ^11.3.1
+
+  # Launch external apps (Google Maps turn-by-turn navigation)
+  url_launcher: ^6.2.5
   
   # Image Picker
   image_picker: ^1.0.7
@@ -67,6 +70,8 @@ dependencies:
   
   # JSON Serialization
   json_annotation: ^4.8.1
+  connectivity_plus: ^7.1.1
+  battery_plus: ^7.0.0
 
 dev_dependencies:
   flutter_test:

@@ -6,7 +6,9 @@ import '../../providers/trip_provider.dart';
 import '../../providers/driver_provider.dart';
 import '../../providers/auth_provider.dart';
 import '../../models/trip_model.dart';
+import '../../core/navigation/app_navigation.dart';
 import '../../widgets/notification_app_bar_action.dart';
+import '../../widgets/background_location_disclosure.dart';
 
 class HomeTab extends StatefulWidget {
   const HomeTab({super.key});
@@ -121,7 +123,11 @@ class _HomeTabState extends State<HomeTab> {
                               onTap: () {
                                 _showStartTripDialog(context, trip);
                               },
-                              child: _buildQueuedTripCard(context, trip),
+                              child: _buildQueuedTripCard(
+                                context,
+                                trip,
+                                highlight: tripProvider.isQueuedTripHighlighted(trip.id),
+                              ),
                             ),
                           )),
                         ],
@@ -231,15 +237,33 @@ class _HomeTabState extends State<HomeTab> {
     );
   }
 
-  Widget _buildQueuedTripCard(BuildContext context, TripModel trip) {
+  Widget _buildQueuedTripCard(
+    BuildContext context,
+    TripModel trip, {
+    bool highlight = false,
+  }) {
     final textTheme = Theme.of(context).textTheme;
     final statusLabel = trip.driverAcceptedAt != null ? 'Accepted' : 'Pending';
-    return Container(
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 400),
+      curve: Curves.easeOut,
       padding: const EdgeInsets.all(16.0),
       decoration: BoxDecoration(
         color: AppColors.offWhite,
         borderRadius: BorderRadius.circular(12.0),
-        border: Border.all(color: AppColors.dividerGrey, width: 1.0),
+        border: Border.all(
+          color: highlight ? Colors.green : AppColors.dividerGrey,
+          width: highlight ? 2.5 : 1.0,
+        ),
+        boxShadow: highlight
+            ? [
+                BoxShadow(
+                  color: Colors.green.withValues(alpha: 0.25),
+                  blurRadius: 10,
+                  spreadRadius: 0,
+                ),
+              ]
+            : null,
       ),
       child: Row(
         children: [
@@ -308,6 +332,7 @@ class _HomeTabState extends State<HomeTab> {
             value: activeTrips.toString(),
             label: localizations.activeTrips,
             textTheme: textTheme,
+            onTap: () => AppNavigation.instance.openTrips(subTab: 0),
           ),
         ),
         const SizedBox(width: 16.0),
@@ -317,6 +342,7 @@ class _HomeTabState extends State<HomeTab> {
             value: completedTrips.toString(),
             label: localizations.completed,
             textTheme: textTheme,
+            onTap: () => AppNavigation.instance.openTrips(subTab: 2),
           ),
         ),
         const SizedBox(width: 16.0),
@@ -337,8 +363,9 @@ class _HomeTabState extends State<HomeTab> {
     required String value,
     required String label,
     required TextTheme textTheme,
+    VoidCallback? onTap,
   }) {
-    return Container(
+    final card = Container(
       padding: const EdgeInsets.all(20.0),
       decoration: BoxDecoration(
         color: AppColors.offWhite,
@@ -366,6 +393,13 @@ class _HomeTabState extends State<HomeTab> {
           ),
         ],
       ),
+    );
+
+    if (onTap == null) return card;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(16.0),
+      child: card,
     );
   }
 
@@ -426,6 +460,8 @@ class _HomeTabState extends State<HomeTab> {
                         backgroundColor: AppColors.success,
                       ),
                     );
+                    await BackgroundLocationConsent.ensure(context);
+                    if (!context.mounted) return;
                     Navigator.of(context).pushNamed(
                       '/active-trip',
                       arguments: trip.id,

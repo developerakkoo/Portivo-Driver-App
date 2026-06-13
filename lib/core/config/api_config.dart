@@ -16,6 +16,12 @@ class ApiConfig {
     }
   }
   
+  /// Engine.IO path; must match server `SOCKET_IO_PATH` (default `/socket.io`).
+  static const String socketPath = String.fromEnvironment(
+    'SOCKET_IO_PATH',
+    defaultValue: '/socket.io',
+  );
+
   // Socket.IO Server URL - Use the same base URL as baseUrl (without /api)
   static String get socketUrl {
     switch (_environment) {
@@ -74,8 +80,15 @@ class ApiConfig {
   static const double retryBackoffMultiplier = 2.0;
   
   // Socket.IO configuration
+  /// Base delay before the first built-in reconnection attempt.
   static const Duration socketReconnectDelay = Duration(seconds: 2);
-  static const int socketMaxReconnectAttempts = 5;
+  /// Upper bound for the exponential reconnection backoff.
+  static const Duration socketReconnectDelayMax = Duration(seconds: 30);
+  /// Attempts per built-in reconnection burst. On exhaustion the client does a
+  /// hard reset and starts a fresh burst (see `socket_service.dart`
+  /// `reconnect_failed`), so streaming during an active trip never permanently
+  /// gives up.
+  static const int socketMaxReconnectAttempts = 12;
   static const Duration socketHeartbeatInterval = Duration(seconds: 30);
-  static const Duration socketConnectionTimeout = Duration(seconds: 10);
+  static const Duration socketConnectionTimeout = Duration(seconds: 45);
 }

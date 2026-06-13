@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/localization/app_localizations.dart';
+import '../../core/navigation/app_navigation.dart';
 import '../../core/utils/helpers.dart';
 import '../../providers/trip_provider.dart';
 import '../../providers/auth_provider.dart';
@@ -9,6 +10,7 @@ import '../../models/trip_model.dart';
 import '../../core/constants/app_constants.dart';
 import '../../services/socket_service.dart';
 import '../../widgets/notification_app_bar_action.dart';
+import '../../widgets/background_location_disclosure.dart';
 
 class TripsTab extends StatefulWidget {
   const TripsTab({super.key});
@@ -28,17 +30,32 @@ class _TripsTabState extends State<TripsTab>
     WidgetsBinding.instance.addObserver(this);
     _tabController = TabController(length: 3, vsync: this);
     _searchController.addListener(() => setState(() {}));
+    AppNavigation.instance.addListener(_onNavRequest);
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _applyRequestedTripsTab();
       _loadData();
     });
   }
 
   @override
   void dispose() {
+    AppNavigation.instance.removeListener(_onNavRequest);
     WidgetsBinding.instance.removeObserver(this);
     _tabController.dispose();
     _searchController.dispose();
     super.dispose();
+  }
+
+  void _onNavRequest() => _applyRequestedTripsTab();
+
+  void _applyRequestedTripsTab() {
+    final requested = AppNavigation.instance.requestedTripsTab;
+    if (requested == null) return;
+    final target = requested.clamp(0, _tabController.length - 1);
+    AppNavigation.instance.consumeRequestedTripsTab();
+    if (_tabController.index != target) {
+      _tabController.animateTo(target);
+    }
   }
 
   @override
@@ -675,6 +692,8 @@ class _TripsTabState extends State<TripsTab>
                         backgroundColor: AppColors.success,
                       ),
                     );
+                    await BackgroundLocationConsent.ensure(context);
+                    if (!context.mounted) return;
                     Navigator.of(context).pushNamed(
                       '/active-trip',
                       arguments: trip.id,

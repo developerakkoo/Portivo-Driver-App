@@ -6,8 +6,7 @@ import '../providers/trip_provider.dart';
 import '../models/trip_model.dart';
 import '../core/constants/app_constants.dart';
 import '../core/config/api_config.dart';
-import '../services/location_stream_service.dart';
-import '../services/socket_service.dart';
+import '../core/utils/navigation_launcher.dart';
 import 'milestone_update_screen.dart';
 import 'pod_upload_screen.dart';
 
@@ -21,80 +20,12 @@ class ActiveTripScreen extends StatefulWidget {
 }
 
 class _ActiveTripScreenState extends State<ActiveTripScreen> {
-  final LocationStreamService _locationStreamService = LocationStreamService();
-  final SocketService _socketService = SocketService();
-  bool _locationStreamActive = false;
-  bool _locationStreamStartFailed = false;
-
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadTrip();
     });
-  }
-
-  @override
-  void dispose() {
-    if (_locationStreamActive) {
-      _locationStreamService.stop();
-      _locationStreamActive = false;
-    }
-    _locationStreamStartFailed = false;
-    super.dispose();
-  }
-
-  Future<void> _startLocationStreamIfNeeded(TripModel trip) async {
-    if (trip.status != AppConstants.tripStatusActive) return;
-    if (_locationStreamActive || _locationStreamStartFailed) return;
-
-    _locationStreamService.onPositionUpdate = (lat, lng) {
-      _socketService.emitDriverLocationUpdate(
-        tripId: trip.id,
-        latitude: lat,
-        longitude: lng,
-      );
-    };
-    final result = await _locationStreamService.start();
-    if (!mounted) return;
-
-    if (result == LocationStreamStartResult.started ||
-        result == LocationStreamStartResult.alreadyRunning) {
-      _locationStreamActive = true;
-      return;
-    }
-
-    _locationStreamStartFailed = true;
-    String? message;
-    switch (result) {
-      case LocationStreamStartResult.permissionDenied:
-        message =
-            'Location permission is required for live tracking. Enable it in system settings.';
-        break;
-      case LocationStreamStartResult.locationServiceDisabled:
-        message =
-            'Turn on location services so the transporter can see your position.';
-        break;
-      case LocationStreamStartResult.failed:
-        message = 'Could not get GPS position. Check location settings.';
-        break;
-      default:
-        break;
-    }
-    if (message != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message)),
-      );
-    }
-  }
-
-  void _stopLocationStreamIfNeeded(TripModel trip) {
-    if (trip.status == AppConstants.tripStatusActive) return;
-    if (!_locationStreamActive && !_locationStreamStartFailed) return;
-
-    _locationStreamService.stop();
-    _locationStreamActive = false;
-    _locationStreamStartFailed = false;
   }
 
   Future<void> _loadTrip() async {
@@ -147,17 +78,6 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
 
           if (tripProvider.isLoading && trip == null) {
             return const Center(child: CircularProgressIndicator());
-          }
-
-          if (trip != null) {
-            final t = trip;
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (t.status == AppConstants.tripStatusActive) {
-                _startLocationStreamIfNeeded(t);
-              } else {
-                _stopLocationStreamIfNeeded(t);
-              }
-            });
           }
 
           if (trip == null) {
@@ -451,6 +371,25 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
 
   Widget _buildLocations(BuildContext context, TripModel trip) {
     final textTheme = Theme.of(context).textTheme;
+
+    // The trip destination depends on progress: before the container is picked
+    // up the driver heads to pickup, afterwards to the drop location. We pick a
+    // sensible default for the prominent "Start Directions" button and still let
+    // the driver tap either stop.
+    final hasPickup = _hasValidCoords(trip.pickupLocation?.coordinates);
+    final hasDrop = _hasValidCoords(trip.dropLocation?.coordinates);
+    final goToPickupFirst = trip.milestones.isEmpty;
+    final LocationCoordinates? primaryCoords = goToPickupFirst && hasPickup
+        ? trip.pickupLocation!.coordinates
+        : (hasDrop
+            ? trip.dropLocation!.coordinates
+            : (hasPickup ? trip.pickupLocation!.coordinates : null));
+    final String primaryLabel = primaryCoords != null &&
+            hasPickup &&
+            primaryCoords == trip.pickupLocation?.coordinates
+        ? AppLocalizations.of(context)!.pickup
+        : AppLocalizations.of(context)!.drop;
+
     return Container(
       padding: const EdgeInsets.all(20.0),
       decoration: BoxDecoration(
@@ -485,17 +424,56 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
               textTheme,
             ),
           ],
+          if (primaryCoords != null) ...[
+            const SizedBox(height: 20.0),
+            SizedBox(
+              height: 52.0,
+              child: ElevatedButton.icon(
+                onPressed: () => _startDirections(primaryCoords, primaryLabel),
+                icon: const Icon(Icons.navigation_rounded, size: 20.0),
+                label: Text(
+                  'Start Directions to $primaryLabel',
+                  style: textTheme.labelLarge?.copyWith(
+                    color: AppColors.background,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );
   }
 
+  bool _hasValidCoords(LocationCoordinates? coords) {
+    if (coords == null) return false;
+    return coords.latitude != 0 || coords.longitude != 0;
+  }
+
+  Future<void> _startDirections(LocationCoordinates coords, String label) async {
+    final launched = await NavigationLauncher.startDirections(
+      destLat: coords.latitude,
+      destLng: coords.longitude,
+      destLabel: label,
+    );
+    if (!launched && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not open Maps for directions'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
   Widget _buildLocationRow(
     String label,
     String address,
-    dynamic coordinates,
+    LocationCoordinates coordinates,
     TextTheme textTheme,
   ) {
+    final hasCoords = _hasValidCoords(coordinates);
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -525,6 +503,12 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
             ],
           ),
         ),
+        if (hasCoords)
+          IconButton(
+            icon: Icon(Icons.directions, size: 22.0, color: AppColors.primary),
+            tooltip: 'Directions to $label',
+            onPressed: () => _startDirections(coordinates, label),
+          ),
       ],
     );
   }

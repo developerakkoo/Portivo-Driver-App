@@ -1,7 +1,9 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import '../core/theme/app_colors.dart';
+import '../core/utils/vehicle_number_validators.dart';
 import '../services/fuel_service.dart';
 
 class FuelQRScreen extends StatefulWidget {
@@ -51,13 +53,14 @@ class _FuelQRScreenState extends State<FuelQRScreen> {
   }
 
   Future<void> _generateQR() async {
-    final vehicle = _vehicleController.text.trim().toUpperCase();
-    final amount = double.tryParse(_amountController.text.trim());
-
-    if (vehicle.isEmpty) {
-      setState(() => _error = 'Enter vehicle number');
+    final vnError =
+        VehicleNumberValidators.validateIndianRegistration(_vehicleController.text);
+    if (vnError != null) {
+      setState(() => _error = vnError);
       return;
     }
+    final vehicle = VehicleNumberValidators.normalize(_vehicleController.text);
+    final amount = double.tryParse(_amountController.text.trim());
     if (amount == null || amount <= 0) {
       setState(() => _error = 'Enter valid amount');
       return;
@@ -179,9 +182,14 @@ class _FuelQRScreenState extends State<FuelQRScreen> {
               if (_qrCodeImage == null) ...[
                 TextField(
                   controller: _vehicleController,
+                  maxLength: 10,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9]')),
+                    LengthLimitingTextInputFormatter(10),
+                  ],
                   decoration: const InputDecoration(
                     labelText: 'Vehicle Number',
-                    hintText: 'e.g. KA01AA0001',
+                    hintText: 'e.g. MH12AB3434',
                   ),
                   textCapitalization: TextCapitalization.characters,
                 ),

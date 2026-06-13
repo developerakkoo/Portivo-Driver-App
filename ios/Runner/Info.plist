@@ -47,7 +47,21 @@
 	<true/>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Location is used to record milestone positions and show your position during active trips.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Porttivo shares your location with the transporter for the duration of an active trip, including while the app is in the background or the phone is locked, so they can track the delivery live.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>Porttivo shares your location with the transporter for the duration of an active trip, including while the app is in the background or the phone is locked, so they can track the delivery live.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+		<string>fetch</string>
+	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>Camera is used to capture photos required for trip milestones.</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>comgooglemaps</string>
+		<string>googlemaps</string>
+	</array>
 </dict>
 </plist>

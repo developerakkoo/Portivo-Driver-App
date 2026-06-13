@@ -94,10 +94,6 @@ class _MilestoneUpdateScreenState extends State<MilestoneUpdateScreen> {
     }
   }
 
-  Future<void> _openSystemSettings() async {
-    await _permService.openSettings();
-  }
-
   Future<void> _pickImage() async {
     setState(() => _errorMessage = null);
 
@@ -137,11 +133,24 @@ class _MilestoneUpdateScreenState extends State<MilestoneUpdateScreen> {
   }
 
   Future<void> _submitMilestone() async {
-    if (_isLoadingLocation || _currentPosition == null) {
+    if (_isLoadingLocation) {
       setState(() {
-        _errorMessage = 'Wait until your location is ready, or fix the issue above and tap Retry.';
+        _errorMessage = 'Getting your location, please wait a moment and try again.';
       });
       return;
+    }
+
+    // Location is captured silently; if it isn't ready yet, try once more here.
+    if (_currentPosition == null) {
+      await _resolveLocation();
+      if (!mounted) return;
+      if (_currentPosition == null) {
+        setState(() {
+          _errorMessage = _locationError ??
+              'Could not get your location. Enable GPS/location and try again.';
+        });
+        return;
+      }
     }
 
     if (_photos.isEmpty) {
@@ -230,10 +239,7 @@ class _MilestoneUpdateScreenState extends State<MilestoneUpdateScreen> {
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
-    final canSubmit = !_isSubmitting &&
-        !_isLoadingLocation &&
-        _currentPosition != null &&
-        _locationError == null;
+    final canSubmit = !_isSubmitting;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -270,10 +276,6 @@ class _MilestoneUpdateScreenState extends State<MilestoneUpdateScreen> {
                 ],
               ),
             ),
-            const SizedBox(height: 24.0),
-
-            _buildLocationCard(textTheme),
-
             const SizedBox(height: 24.0),
 
             _buildPhotoSection(textTheme),
@@ -327,93 +329,6 @@ class _MilestoneUpdateScreenState extends State<MilestoneUpdateScreen> {
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  Widget _buildLocationCard(TextTheme textTheme) {
-    return Container(
-      padding: const EdgeInsets.all(20.0),
-      decoration: BoxDecoration(
-        color: AppColors.offWhite,
-        borderRadius: BorderRadius.circular(16.0),
-        border: Border.all(color: AppColors.dividerGrey, width: 1.0),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.my_location, color: AppColors.primary, size: 24.0),
-              const SizedBox(width: 8.0),
-              Text(
-                'Location for milestone',
-                style: textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16.0),
-          if (_isLoadingLocation) ...[
-            Row(
-              children: [
-                const SizedBox(
-                  width: 28.0,
-                  height: 28.0,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2.5,
-                    color: AppColors.primary,
-                  ),
-                ),
-                const SizedBox(width: 16.0),
-                Expanded(
-                  child: Text(
-                    'Getting your location…',
-                    style: textTheme.bodyMedium?.copyWith(color: AppColors.textSecondary),
-                  ),
-                ),
-              ],
-            ),
-          ] else if (_locationError != null) ...[
-            Text(
-              _locationError!,
-              style: textTheme.bodyMedium?.copyWith(color: AppColors.error),
-            ),
-            const SizedBox(height: 12.0),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: _resolveLocation,
-                    child: const Text('Retry'),
-                  ),
-                ),
-                const SizedBox(width: 12.0),
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: _openSystemSettings,
-                    child: const Text('Settings'),
-                  ),
-                ),
-              ],
-            ),
-          ] else if (_currentPosition != null) ...[
-            Row(
-              children: [
-                Icon(Icons.check_circle, color: AppColors.success, size: 22.0),
-                const SizedBox(width: 8.0),
-                Expanded(
-                  child: Text(
-                    'Location ready (${_currentPosition!.latitude.toStringAsFixed(5)}, ${_currentPosition!.longitude.toStringAsFixed(5)})',
-                    style: textTheme.bodyMedium?.copyWith(color: AppColors.textPrimary),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ],
       ),
     );
   }

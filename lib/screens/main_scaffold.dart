@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../core/theme/app_colors.dart';
 import '../core/localization/app_localizations.dart';
+import '../core/navigation/app_navigation.dart';
 import '../providers/auth_provider.dart';
 import '../providers/driver_provider.dart';
 import '../providers/notification_provider.dart';
@@ -27,11 +28,28 @@ class _MainScaffoldState extends State<MainScaffold> {
   @override
   void initState() {
     super.initState();
+    _currentIndex = AppNavigation.instance.bottomIndex;
+    AppNavigation.instance.addListener(_onNavChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _connectSocket();
       _maybeShowPermissionModal();
       _syncNotifications();
     });
+  }
+
+  @override
+  void dispose() {
+    AppNavigation.instance.removeListener(_onNavChanged);
+    super.dispose();
+  }
+
+  void _onNavChanged() {
+    if (!mounted) return;
+    if (_currentIndex != AppNavigation.instance.bottomIndex) {
+      setState(() {
+        _currentIndex = AppNavigation.instance.bottomIndex;
+      });
+    }
   }
 
   Future<void> _syncNotifications() async {
@@ -102,9 +120,7 @@ class _MainScaffoldState extends State<MainScaffold> {
 
   void _onDestinationSelected(int index) {
     if (index != _currentIndex) {
-      setState(() {
-        _currentIndex = index;
-      });
+      AppNavigation.instance.setBottomIndex(index);
     }
   }
 

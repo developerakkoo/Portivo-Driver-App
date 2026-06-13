@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:flutter/foundation.dart';
 import 'storage_service.dart';
@@ -20,12 +21,17 @@ class SocketService {
   IO.Socket? _socket;
   final StorageService _storage = StorageService();
   SocketConnectionState _connectionState = SocketConnectionState.disconnected;
-  Timer? _reconnectTimer;
   Timer? _heartbeatTimer;
-  int _reconnectAttempts = 0;
   String? _driverId;
   String? _vehicleId;
   String? _tripId;
+
+  /// Ordered buffer of driver location fixes captured while the socket was not
+  /// ready (e.g. internet dropped). Flushed in order on reconnect so the trail
+  /// has no gaps. Capped to avoid unbounded memory growth on long outages.
+  static const int _maxBufferedLocations = 240; // ~20 min at one fix / 5s
+  final Queue<Map<String, dynamic>> _locationBuffer =
+      Queue<Map<String, dynamic>>();
 
   // Event callbacks
   Function(Map<String, dynamic>)? onTripStarted;
@@ -40,22 +46,46 @@ class SocketService {
   Function(Map<String, dynamic>)? onTripDriverAssigned;
   Function(Map<String, dynamic>)? onTripVehicleAssigned;
   Function(Map<String, dynamic>)? onTripClosedWithoutPOD;
+  Function(Map<String, dynamic>)? onTripUpdated;
   Function(SocketConnectionState)? onConnectionStateChanged;
   Function(String)? onError;
 
   bool get isConnected => _connectionState == SocketConnectionState.connected;
   SocketConnectionState get connectionState => _connectionState;
 
-  Future<void> connect() async {
-    if (_socket != null && _connectionState == SocketConnectionState.connected) {
-      if (kDebugMode) {
-        print('SocketService: Already connected');
-      }
-      return;
+  /// Whether the underlying Socket.IO client is connected (source of truth for emits).
+  bool get _socketIoConnected => _socket != null && _socket!.connected;
+
+  void _flushLocationBuffer() {
+    if (!_socketIoConnected || _locationBuffer.isEmpty) return;
+    final count = _locationBuffer.length;
+
+    // Replay buffered fixes in order using the per-fix `driver:location:update`
+    // event so delivery works regardless of whether the server has the newer
+    // `driver:location:batch` endpoint deployed.
+    while (_locationBuffer.isNotEmpty && _socketIoConnected) {
+      final fix = _locationBuffer.removeFirst();
+      _socket!.emit('driver:location:update', fix);
     }
 
-    if (_connectionState == SocketConnectionState.connecting) {
-      if (kDebugMode) {
+    if (kDebugMode) {
+      print('SocketService: Flushed $count buffered driver location(s)');
+    }
+  }
+
+  Future<void> connect() async {
+    // Idempotent: when a socket already exists, Socket.IO's built-in
+    // reconnection owns retries — never tear it down here (that would restart
+    // the backoff and can starve buffered location flushes during a trip).
+    if (_socket != null) {
+      if (_socketIoConnected) {
+        _setConnectionState(SocketConnectionState.connected);
+      } else if (_socket!.disconnected) {
+        // Built-in reconnection is not running (e.g. server-forced disconnect);
+        // nudge a fresh connection on the existing instance.
+        _setConnectionState(SocketConnectionState.connecting);
+        _socket!.connect();
+      } else if (kDebugMode) {
         print('SocketService: Connection already in progress');
       }
       return;
@@ -73,39 +103,43 @@ class SocketService {
         return;
       }
 
-      // Disconnect existing socket if any
-      if (_socket != null) {
-        _socket!.disconnect();
-        _socket!.dispose();
-        _socket = null;
-      }
-
       // Extract base URL from ApiConfig
       final baseUrl = ApiConfig.socketUrl;
-      
+
       if (kDebugMode) {
-        print('SocketService: Connecting to $baseUrl');
+        print('SocketService: Connecting to $baseUrl (path ${ApiConfig.socketPath})');
       }
 
+      // Flutter / dart:io: Engine.IO polling over XHR is not supported like in
+      // the browser. Using polling first causes connect timeouts while curl to
+      // /socket.io still works. WebSocket-only matches socket_io_client on
+      // mobile. (Mirrors the transporter app's proven config — do not revert.)
       _socket = IO.io(
         baseUrl,
         IO.OptionBuilder()
+            .setPath(ApiConfig.socketPath)
             .setTransports(['websocket'])
             .setAuth({'token': token})
-            .enableAutoConnect()
             .setTimeout(ApiConfig.socketConnectionTimeout.inMilliseconds)
+            .setReconnectionAttempts(ApiConfig.socketMaxReconnectAttempts)
+            .setReconnectionDelay(ApiConfig.socketReconnectDelay.inMilliseconds)
+            .setReconnectionDelayMax(
+              ApiConfig.socketReconnectDelayMax.inMilliseconds,
+            )
+            .setRandomizationFactor(0.5)
+            .enableReconnection()
+            .disableAutoConnect()
             .build(),
       );
 
       _setupEventListeners();
-      _reconnectAttempts = 0;
+      _socket!.connect();
     } catch (e, stackTrace) {
       if (kDebugMode) {
         print('SocketService: Connection error: $e');
         print('Stack: $stackTrace');
       }
       _setConnectionState(SocketConnectionState.error);
-      _scheduleReconnect();
     }
   }
 
@@ -119,54 +153,82 @@ class SocketService {
     }
   }
 
+  /// Shared handling for the first connect and every subsequent reconnect:
+  /// mark connected, restart the heartbeat, rejoin rooms, and flush any
+  /// buffered location fixes so the transporter's trail has no gaps.
+  void _onConnectedOrReconnected() {
+    _setConnectionState(SocketConnectionState.connected);
+    _startHeartbeat();
+
+    if (_driverId != null) {
+      joinDriverRoom(_driverId!);
+    }
+    if (_vehicleId != null) {
+      joinVehicleRoom(_vehicleId!);
+    }
+    if (_tripId != null) {
+      joinTripRoom(_tripId!);
+    }
+    _flushLocationBuffer();
+  }
+
   void _setupEventListeners() {
     if (_socket == null) return;
 
     _socket!.onConnect((_) {
-      _setConnectionState(SocketConnectionState.connected);
-      _reconnectAttempts = 0;
-      _startHeartbeat();
-      
-      // Rejoin rooms if we have IDs
-      if (_driverId != null) {
-        joinDriverRoom(_driverId!);
-      }
-      if (_vehicleId != null) {
-        joinVehicleRoom(_vehicleId!);
-      }
-      if (_tripId != null) {
-        joinTripRoom(_tripId!);
-      }
-      
+      _onConnectedOrReconnected();
       if (kDebugMode) {
         print('SocketService: Connected successfully');
+      }
+    });
+
+    // Fires on every successful built-in reconnection after a drop.
+    _socket!.on('reconnect', (_) {
+      _onConnectedOrReconnected();
+      if (kDebugMode) {
+        print('SocketService: Reconnected — rooms re-joined, buffer flushed');
       }
     });
 
     _socket!.onDisconnect((reason) {
       _setConnectionState(SocketConnectionState.disconnected);
       _stopHeartbeat();
-      
+
       if (kDebugMode) {
         print('SocketService: Disconnected - $reason');
       }
-      
-      // Schedule reconnect if not intentional disconnect
-      if (reason != 'io client disconnect') {
-        _scheduleReconnect();
+
+      // 'io server disconnect' means the server dropped us and the client will
+      // NOT auto-reconnect; restart manually. All other reasons are handled by
+      // Socket.IO's built-in reconnection.
+      if (reason == 'io server disconnect') {
+        _socket?.connect();
       }
     });
 
     _socket!.onConnectError((error) {
       _setConnectionState(SocketConnectionState.error);
       _stopHeartbeat();
-      
+
       if (kDebugMode) {
         print('SocketService: Connection error: $error');
       }
-      
+
       onError?.call(error.toString());
-      _scheduleReconnect();
+      // Built-in reconnection retries automatically; do not schedule here.
+    });
+
+    // Built-in reconnection exhausted its attempt burst. While the driver may
+    // still be on an active trip we must never permanently give up: hard-reset
+    // the instance and start a fresh connection cycle.
+    _socket!.on('reconnect_failed', (_) {
+      if (kDebugMode) {
+        print('SocketService: Reconnect attempts exhausted — hard reset');
+      }
+      _setConnectionState(SocketConnectionState.error);
+      _socket?.dispose();
+      _socket = null;
+      connect();
     });
 
     _socket!.onError((error) {
@@ -177,6 +239,13 @@ class SocketService {
     });
 
     // Trip events
+    _socket!.on('trip:updated', (data) {
+      if (kDebugMode) {
+        print('SocketService: trip:updated - $data');
+      }
+      onTripUpdated?.call(data is Map ? Map<String, dynamic>.from(data) : {});
+    });
+
     _socket!.on('trip:started', (data) {
       if (kDebugMode) {
         print('SocketService: trip:started - $data');
@@ -280,39 +349,10 @@ class SocketService {
     });
   }
 
-  void _scheduleReconnect() {
-    if (_reconnectTimer != null) {
-      _reconnectTimer!.cancel();
-    }
-
-    if (_reconnectAttempts >= ApiConfig.socketMaxReconnectAttempts) {
-      if (kDebugMode) {
-        print('SocketService: Max reconnect attempts reached');
-      }
-      return;
-    }
-
-    _reconnectAttempts++;
-    final delay = Duration(
-      milliseconds: (ApiConfig.socketReconnectDelay.inMilliseconds * 
-                    (_reconnectAttempts * ApiConfig.retryBackoffMultiplier)).round(),
-    );
-
-    if (kDebugMode) {
-      print('SocketService: Scheduling reconnect in ${delay.inMilliseconds}ms (attempt $_reconnectAttempts/${ApiConfig.socketMaxReconnectAttempts})');
-    }
-
-    _reconnectTimer = Timer(delay, () {
-      if (_connectionState != SocketConnectionState.connected) {
-        connect();
-      }
-    });
-  }
-
   void _startHeartbeat() {
     _stopHeartbeat();
     _heartbeatTimer = Timer.periodic(ApiConfig.socketHeartbeatInterval, (_) {
-      if (_socket != null && _connectionState == SocketConnectionState.connected) {
+      if (_socketIoConnected) {
         _socket!.emit('ping');
         if (kDebugMode) {
           print('SocketService: Heartbeat ping sent');
@@ -328,7 +368,7 @@ class SocketService {
 
   void joinDriverRoom(String driverId) {
     _driverId = driverId;
-    if (_socket != null && _connectionState == SocketConnectionState.connected) {
+    if (_socketIoConnected) {
       _socket!.emit('join:driver', driverId);
       if (kDebugMode) {
         print('SocketService: Joined driver room: $driverId');
@@ -338,7 +378,7 @@ class SocketService {
 
   void joinVehicleRoom(String vehicleId) {
     _vehicleId = vehicleId;
-    if (_socket != null && _connectionState == SocketConnectionState.connected) {
+    if (_socketIoConnected) {
       _socket!.emit('join:vehicle', vehicleId);
       if (kDebugMode) {
         print('SocketService: Joined vehicle room: $vehicleId');
@@ -348,7 +388,7 @@ class SocketService {
 
   void joinTripRoom(String tripId) {
     _tripId = tripId;
-    if (_socket != null && _connectionState == SocketConnectionState.connected) {
+    if (_socketIoConnected) {
       _socket!.emit('join:trip', tripId);
       if (kDebugMode) {
         print('SocketService: Joined trip room: $tripId');
@@ -358,7 +398,7 @@ class SocketService {
 
   /// Emit trip start event
   void emitTripStart(String tripId) {
-    if (_socket != null && _connectionState == SocketConnectionState.connected) {
+    if (_socketIoConnected) {
       _socket!.emit('trip:start', {'tripId': tripId});
       if (kDebugMode) {
         print('SocketService: Emitted trip:start for trip: $tripId');
@@ -370,25 +410,91 @@ class SocketService {
     }
   }
 
-  /// Emit driver location update (for real-time tracking during active trip)
+  /// Emit driver location update (for real-time tracking during active trip).
+  ///
+  /// When the socket is connected the fix is sent immediately (after first
+  /// draining any buffered fixes to preserve order). Otherwise it is buffered
+  /// and flushed in order on reconnect, so the transporter's trail has no gaps.
   void emitDriverLocationUpdate({
     required String tripId,
     required double latitude,
     required double longitude,
+    double? accuracy,
+    double? speed,
+    double? heading,
   }) {
-    if (_socket != null && _connectionState == SocketConnectionState.connected) {
-      _socket!.emit('driver:location:update', {
-        'tripId': tripId,
-        'latitude': latitude,
-        'longitude': longitude,
-      });
+    final payload = <String, dynamic>{
+      'tripId': tripId,
+      'latitude': latitude,
+      'longitude': longitude,
+      'timestamp': DateTime.now().toUtc().toIso8601String(),
+    };
+    if (accuracy != null && accuracy >= 0) payload['accuracy'] = accuracy;
+    if (speed != null && speed >= 0) payload['speed'] = speed;
+    if (heading != null && heading >= 0) payload['heading'] = heading;
+
+    if (_socketIoConnected) {
+      _flushLocationBuffer();
+      _socket!.emit('driver:location:update', payload);
       if (kDebugMode) {
         print('SocketService: Emitted driver:location:update for trip: $tripId');
       }
-    } else {
-      if (kDebugMode) {
-        print('SocketService: Cannot emit driver location - not connected');
+      return;
+    }
+
+    _locationBuffer.addLast(payload);
+    while (_locationBuffer.length > _maxBufferedLocations) {
+      _locationBuffer.removeFirst();
+    }
+
+    if (_connectionState != SocketConnectionState.connecting) {
+      connect();
+    }
+
+    if (kDebugMode) {
+      print(
+        'SocketService: Buffered driver location (${_locationBuffer.length} pending); will send on connect',
+      );
+    }
+  }
+
+  /// Emit a driver health/presence heartbeat so the transporter can tell when
+  /// GPS is off, the device is offline, or the app is backgrounded. Sent on a
+  /// fixed cadence independent of GPS movement.
+  void emitDriverHealthHeartbeat({
+    required String tripId,
+    bool? gpsEnabled,
+    bool? networkConnected,
+    String? appState,
+    int? batteryLevel,
+  }) {
+    if (!_socketIoConnected) {
+      if (_connectionState != SocketConnectionState.connecting) {
+        connect();
       }
+      return;
+    }
+    final payload = <String, dynamic>{'tripId': tripId};
+    if (gpsEnabled != null) payload['gpsEnabled'] = gpsEnabled;
+    if (networkConnected != null) payload['networkConnected'] = networkConnected;
+    if (appState != null) payload['appState'] = appState;
+    if (batteryLevel != null) payload['batteryLevel'] = batteryLevel;
+    _socket!.emit('driver:health:heartbeat', payload);
+    if (kDebugMode) {
+      print('SocketService: Emitted driver:health:heartbeat for trip: $tripId');
+    }
+  }
+
+  /// Tell the server the driver is logging out so the transporter sees a
+  /// `logged_out` tracking status immediately (rather than waiting for stale
+  /// detection). Best-effort; safe to call when not connected.
+  void emitDriverSessionLogout({String? tripId}) {
+    if (!_socketIoConnected) return;
+    _socket!.emit('driver:session:logout', {
+      if (tripId != null) 'tripId': tripId,
+    });
+    if (kDebugMode) {
+      print('SocketService: Emitted driver:session:logout');
     }
   }
 
@@ -401,7 +507,7 @@ class SocketService {
     String? photo,
     String? address,
   }) {
-    if (_socket != null && _connectionState == SocketConnectionState.connected) {
+    if (_socketIoConnected) {
       _socket!.emit('trip:milestone:update', {
         'tripId': tripId,
         'milestoneNumber': milestoneNumber,
@@ -422,7 +528,7 @@ class SocketService {
 
   /// Emit trip complete event
   void emitTripComplete(String tripId) {
-    if (_socket != null && _connectionState == SocketConnectionState.connected) {
+    if (_socketIoConnected) {
       _socket!.emit('trip:complete', {'tripId': tripId});
       if (kDebugMode) {
         print('SocketService: Emitted trip:complete for trip: $tripId');
@@ -435,10 +541,7 @@ class SocketService {
   }
 
   void disconnect() {
-    _reconnectTimer?.cancel();
-    _reconnectTimer = null;
     _stopHeartbeat();
-    _reconnectAttempts = 0;
     _driverId = null;
     _vehicleId = null;
     _tripId = null;
@@ -447,6 +550,7 @@ class SocketService {
     _socket?.dispose();
     _socket = null;
     _setConnectionState(SocketConnectionState.disconnected);
+    _locationBuffer.clear();
 
     if (kDebugMode) {
       print('SocketService: Disconnected');

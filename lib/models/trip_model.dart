@@ -52,12 +52,8 @@ class TripModel {
       driverId: JsonParser.extractId(json['driverId']),
       containerNumber: json['containerNumber']?.toString(),
       reference: json['reference']?.toString(),
-      pickupLocation: json['pickupLocation'] != null
-          ? TripLocation.fromJson(json['pickupLocation'])
-          : null,
-      dropLocation: json['dropLocation'] != null
-          ? TripLocation.fromJson(json['dropLocation'])
-          : null,
+      pickupLocation: _parseTripLocation(json['pickupLocation']),
+      dropLocation: _parseTripLocation(json['dropLocation']),
       tripType: JsonParser.extractString(json['tripType'], 'EXPORT'),
       status: JsonParser.extractString(json['status'], 'PLANNED'),
       driverAcceptedAt: JsonParser.extractDateTime(json['driverAcceptedAt']),
@@ -81,6 +77,19 @@ class TripModel {
   }
 }
 
+/// API uses GeoJSON Point: `{ type, coordinates: [lng, lat], formattedAddress, ... }`.
+TripLocation? _parseTripLocation(dynamic value) {
+  if (value == null) return null;
+  if (value is Map) {
+    try {
+      return TripLocation.fromJson(Map<String, dynamic>.from(value));
+    } catch (_) {
+      return null;
+    }
+  }
+  return null;
+}
+
 class TripLocation {
   final String? address;
   final LocationCoordinates coordinates;
@@ -92,8 +101,9 @@ class TripLocation {
 
   factory TripLocation.fromJson(Map<String, dynamic> json) {
     return TripLocation(
-      address: json['address'],
-      coordinates: LocationCoordinates.fromJson(json['coordinates'] ?? {}),
+      address: json['address']?.toString() ??
+          json['formattedAddress']?.toString(),
+      coordinates: LocationCoordinates.fromJson(json['coordinates']),
     );
   }
 }
@@ -107,11 +117,27 @@ class LocationCoordinates {
     required this.longitude,
   });
 
-  factory LocationCoordinates.fromJson(Map<String, dynamic> json) {
-    return LocationCoordinates(
-      latitude: JsonParser.extractDouble(json['latitude'], 0.0),
-      longitude: JsonParser.extractDouble(json['longitude'], 0.0),
-    );
+  /// Handles `{ latitude, longitude }` (milestones, legacy) and GeoJSON `[longitude, latitude]`.
+  factory LocationCoordinates.fromJson(dynamic json) {
+    if (json == null) {
+      return LocationCoordinates(latitude: 0, longitude: 0);
+    }
+    if (json is List) {
+      if (json.length >= 2) {
+        final a = (json[0] as num).toDouble();
+        final b = (json[1] as num).toDouble();
+        return LocationCoordinates(longitude: a, latitude: b);
+      }
+      return LocationCoordinates(latitude: 0, longitude: 0);
+    }
+    if (json is Map) {
+      final m = Map<String, dynamic>.from(json);
+      return LocationCoordinates(
+        latitude: JsonParser.extractDouble(m['latitude'], 0.0),
+        longitude: JsonParser.extractDouble(m['longitude'], 0.0),
+      );
+    }
+    return LocationCoordinates(latitude: 0, longitude: 0);
   }
 
   Map<String, dynamic> toJson() {
